@@ -71,6 +71,7 @@ Stop with `Ctrl-C`. The server finishes in-flight work, stops any AI process it 
 ## Tests and checks
 
 ```bash
+pnpm build        # once after a fresh install: other packages type-check against the built id-generator
 pnpm typecheck
 pnpm test
 ```
