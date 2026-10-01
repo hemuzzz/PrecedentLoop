@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../dist/storage/schema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,8 +10,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { migrateCandidateStore } from "../dist/asset/candidate-repository.js";
-import { migrateKnowledge } from "../dist/knowledge/repository.js";
 import { startPrecedentLoopServer } from "../dist/runtime.js";
 
 const execFileAsync = promisify(execFile);
@@ -36,8 +35,8 @@ try {
   await writeFile(join(repositoryPath, candidate), unsafe);
   await writeFile(join(repositoryPath, "inbox/global/memories/valid-inbox.md"), valid);
   // Startup never migrates; mirror the explicit offline installation step.
-  migrateKnowledge(join(root, "memory.sqlite"), false, true);
-  migrateCandidateStore(join(root, "memory.sqlite"));
+  initializeDatabase(join(root, "memory.sqlite"));
+
   runtime = await startPrecedentLoopServer({
     assetRepositoryPath: repositoryPath,
     databasePath: join(root, "memory.sqlite"),

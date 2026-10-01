@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -7,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import { AssetContentVersionRepository } from "../src/asset/content-version.js";
 import { AssetIndexManager, AssetSearchService, computeContentHash } from "../src/asset/index.js";
-import { KnowledgeRepository, migrateKnowledge, migrateRecallStorage } from "../src/knowledge/repository.js";
+import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { KnowledgeService } from "../src/knowledge/service.js";
 import { WorkspaceCapabilityService } from "../src/workspace/capability.js";
 
@@ -20,9 +21,8 @@ async function fixture(t: TestContext) {
   await writeFile(options.workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [
     { name: "alpha", paths: [join(root, "alpha")] }, { name: "beta", paths: [join(root, "beta")] },
   ] }));
-  new AssetContentVersionRepository(options.databasePath).close();
+  initializeDatabase(options.databasePath);
   const manager = await AssetIndexManager.create(options);
-  migrateKnowledge(options.databasePath); migrateRecallStorage(options.databasePath);
   const repository = new KnowledgeRepository(options.databasePath);
   const capabilities = new WorkspaceCapabilityService(repository, options.workspaceConfigPath);
   const alpha = (await capabilities.issueFromTrustedHost(join(root, "alpha")))[0]!.capabilityId;

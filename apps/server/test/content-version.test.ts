@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, unlink } from "node:fs/promises";
@@ -10,8 +11,6 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { AssetContentVersionRepository } from "../src/asset/content-version.js";
 import { AssetDiffService, compareContentVersions, DIFF_LIMITS } from "../src/asset/content-diff.js";
 import { confirmInboxAsset, computeContentHash, AssetIndexManager, AssetSearchService, scanAssetRepository } from "../src/asset/index.js";
-import { migrateKnowledge } from "../src/knowledge/repository.js";
-import { migrateCandidateStore } from "../src/asset/candidate-repository.js";
 import { withRepositoryAccess } from "../src/asset/coordination.js";
 
 const id = "ast2034512345678901248";
@@ -27,8 +26,8 @@ async function fixture() {
   await mkdir(join(options.repositoryPath, "assets/global/memories"), { recursive: true });
   await mkdir(join(options.repositoryPath, "inbox/global/memories"), { recursive: true });
   await writeFile(options.workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [] }));
-  migrateKnowledge(options.databasePath, false, true);
-  migrateCandidateStore(options.databasePath);
+  initializeDatabase(options.databasePath);
+
   return { ...options, root, candidate: (bytes: Buffer) => writeFile(join(options.repositoryPath, relativePath), bytes),
     formal: () => readFile(join(options.repositoryPath, formalPath)), cleanup: () => rm(root, { recursive: true, force: true }) };
 }
@@ -202,7 +201,7 @@ test("stored hash corruption and missing durable schema fail explicitly", async 
     assert.throws(() => versions.read(id), { code: "CONTENT_VERSION_INTEGRITY_ERROR" });
     versions.database.exec("DROP TABLE asset_content_version");
     assert.throws(() => versions.read(id)); versions.close();
-    assert.throws(() => new AssetContentVersionRepository(f.databasePath), { code: "CONTENT_VERSION_INTEGRITY_ERROR" });
+    assert.throws(() => new AssetContentVersionRepository(f.databasePath), { code: "DATABASE_SCHEMA_INVALID" });
   } finally { await f.cleanup(); }
 });
 
@@ -212,7 +211,6 @@ test("real REST Diff budgets remain read-only and concurrent ordinary REST/MCP r
   const { startPrecedentLoopServer } = await import("../src/runtime.js");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
-  const { migrateKnowledge } = await import("../src/knowledge/repository.js");
   const reservation = createServer();
   await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve));
   const address = reservation.address(); assert.ok(address && typeof address !== "string");
@@ -220,7 +218,6 @@ test("real REST Diff budgets remain read-only and concurrent ordinary REST/MCP r
   let runtime: Awaited<ReturnType<typeof startPrecedentLoopServer>> | undefined;
   let client: InstanceType<typeof Client> | undefined;
   try {
-    migrateKnowledge(f.databasePath, false, true);
     const a = source("old-line\n".repeat(1990)), b = source("new-line\n".repeat(1990));
     await f.candidate(a); await confirmInboxAsset(input(a), f);
     await f.candidate(b); await confirmInboxAsset(input(b, a), f);

@@ -43,8 +43,17 @@ test("Claude catalog parses aliases and effort levels from the installed CLI hel
   await writeFile(executable, `#!/bin/sh\ncat <<'EOF'\n${help}\nEOF\n`, { mode: 0o700 });
   await writeFile(join(root, "settings.json"), JSON.stringify({ model: "opus", effortLevel: "high" }));
   const catalog = await claudeModelCatalog(root, executable, root);
-  assert.deepEqual(catalog.models.map(model => [model.id, model.label]), [["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"]]);
+  assert.deepEqual(catalog.models.map(model => [model.id, model.label]), [["fable", "Fable（最新版本，由 Claude Code 决定）"], ["opus", "Opus（最新版本，由 Claude Code 决定）"], ["sonnet", "Sonnet（最新版本，由 Claude Code 决定）"]]);
   assert.deepEqual(catalog.current, { model: "opus", effort: "high" });
+  await writeFile(join(root, "settings.json"), JSON.stringify({ model: "opus" }));
+  assert.deepEqual((await claudeModelCatalog(root, executable, root)).current, { model: "opus", effort: null });
+  await writeFile(join(root, "settings.json"), JSON.stringify({ model: "claude-opus-5-5", effortLevel: "max" }));
+  const explicit = await claudeModelCatalog(root, executable, root);
+  assert.deepEqual(explicit.current, { model: "claude-opus-5-5", effort: "max" });
+  assert.equal(explicit.models.at(-1)?.label, "claude-opus-5-5");
+  // Without help evidence, do not guess that a configured name is an alias.
+  await writeFile(join(root, "settings.json"), JSON.stringify({ model: "custom" }));
+  assert.equal((await claudeModelCatalog(root, null, root)).models[0]?.label, "custom");
   const missing = await claudeModelCatalog(join(root, "none"), null, root);
   assert.deepEqual(missing, { models: [], efforts: [], current: { model: null, effort: null } });
 });

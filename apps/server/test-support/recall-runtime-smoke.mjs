@@ -12,7 +12,7 @@ const buildRoot = process.env.PRECEDENT_LOOP_SMOKE_BUILD_ROOT;
 if (!buildRoot || !isAbsolute(buildRoot)) throw new Error("An absolute isolated build root is required");
 const dist = join(buildRoot, "apps/server/dist");
 const { startPrecedentLoopServer } = await import(pathToFileURL(join(dist, "runtime.js")).href);
-const { migrateKnowledge } = await import(pathToFileURL(join(dist, "knowledge/repository.js")).href);
+const { initializeDatabase } = await import(pathToFileURL(join(dist, "storage/schema.js")).href);
 const { handleCodexHook } = await import(pathToFileURL(join(dist, "hook/user-prompt-submit.js")).href);
 const directory = await mkdtemp(join(tmpdir(), "codex-recall-runtime-"));
 const repositoryPath = join(directory, "repository");
@@ -29,7 +29,7 @@ try {
     `---\nid: ${assetId}\ntype: MEMORY\nscope: WORKSPACE\nworkspace: alpha\ntitle: 业务字典\nsummary: 字典配置位于 DictConfig。\n---\n\n# 业务字典\n\n隔离构建验收正文。Native Memories 与 KNOWLEDGE.md。\n`);
   await writeFile(join(repositoryPath, "assets/workspaces/alpha/memories/ast2034512345678901249.md"),
     "---\nid: ast2034512345678901249\ntype: MEMORY\nscope: WORKSPACE\nworkspace: alpha\ntitle: Native tooling and unrelated Memories\nsummary: KNOWLEDGEXmd\n---\n干扰样本。\n");
-  assert.equal(migrateKnowledge(databasePath, false, true), 5);
+  initializeDatabase(databasePath);
   const context = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: directory },
     { databasePath, workspaceConfigPath });
   const additionalContext = JSON.parse(context).hookSpecificOutput.additionalContext;

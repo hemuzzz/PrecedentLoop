@@ -1,11 +1,10 @@
-import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { initializeDatabase } from "../src/storage/schema.js";
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
-import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
@@ -14,13 +13,11 @@ import { AssetContentVersionRepository } from "../src/asset/content-version.js";
 import { compareRankedItems, type RankedSearchItem } from "../src/asset/search.js";
 import { KnowledgeError, type RecallResult } from "../src/knowledge/model.js";
 import { KnowledgeProjection } from "../src/knowledge/projection.js";
-import { KnowledgeRepository, migrateKnowledge, migrateRecallStorage } from "../src/knowledge/repository.js";
-import { createLegacyRecallDatabase } from "../test-support/legacy-recall-fixture.js";
+import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { KnowledgeService } from "../src/knowledge/service.js";
 import { WorkspaceCapabilityService } from "../src/workspace/capability.js";
 import { CandidateService } from "../src/asset/candidate-service.js";
 import { createAssetMcpServer } from "../src/mcp/tools.js";
-import { runMaintenanceCli } from "../src/maintenance-cli.js";
 import { handleCodexHook } from "../src/hook/user-prompt-submit.js";
 
 const ids = new SnowflakeIdGenerator();
@@ -41,10 +38,8 @@ async function fixture(t: TestContext) {
     { name: "alpha", paths: ["/workspace/alpha"] }, { name: "beta", paths: ["/workspace/beta"] },
   ] };
   await writeFile(options.workspaceConfigPath, JSON.stringify(config));
-  const content = new AssetContentVersionRepository(options.databasePath); content.close();
+  initializeDatabase(options.databasePath);
   const manager = await AssetIndexManager.create(options);
-  migrateKnowledge(options.databasePath);
-  migrateRecallStorage(options.databasePath);
   const repository = new KnowledgeRepository(options.databasePath);
   const capabilities = new WorkspaceCapabilityService(repository, options.workspaceConfigPath);
   // Synthetic host input in an isolated fixture; not evidence of Desktop issuance.
@@ -362,81 +357,4 @@ test("MCP publishes an object-root queries array and returns one serialized resu
   assert.ok(context.includes("cat <<'EOF' | /synthetic/capture --record"));
   const missingIdentity = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: "/workspace/alpha" }, { ...f, captureCommand: "/synthetic/capture --record" });
   assert.match(missingIdentity!, /评估标识或命令缺失/);
-});
-
-test("offline schema 2/3/4 upgrade preserves queries, operation identities, content and references", async t => {
-  const root = await mkdtemp(join(tmpdir(), "codex-query-migration-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  for (const version of [2, 3, 4] as const) {
-    const path = join(root, `${version}.sqlite`);
-    createLegacyRecallDatabase(path, version);
-    const catalog = new AssetCatalog(path); catalog.close();
-    const db = new Database(path); t.after(() => db.close());
-    db.exec("INSERT INTO asset_catalog VALUES ('ast1','MEMORY','GLOBAL',NULL,'DictConfig','summary','assets/global/memories/ast1.md','hash',12,'2026-09-08','2026-09-08'); INSERT INTO asset_fts(rowid,title,summary,body) VALUES (1,'DictConfig','summary','preserved body')");
-    const originals = ['业务字典|DictConfig', '["a","b"]', 'a"b\\c', "  历史\n表达😀  "];
-    originals.forEach((query, i) => db.prepare("INSERT INTO recall_operation VALUES (?, '[]', ?, '[]', NULL, '2026-09-08', '[]', '{}')").run(`usg${i + 1}`, version === 4 ? JSON.stringify([query]) : query));
-    const expressions = originals.map(query => [query]);
-    if (version === 4) {
-      expressions[0] = [originals[0]!, "DictConfig", "业务字典"];
-      db.prepare("UPDATE recall_operation SET queries_json=? WHERE recall_id='usg1'").run(JSON.stringify(expressions[0]));
-    }
-    db.prepare("UPDATE recall_operation SET diagnostics_json=?, budget_json=? WHERE recall_id='usg1'").run(
-      JSON.stringify(["CHARACTER_LIMIT", "POLICY_UNAVAILABLE", "SCENARIO_SKIPPED", "POLICYX_RESERVED"]),
-      JSON.stringify({ deliveredAssets: 1, modelVisibleCharacters: 4321, directBucketAssets: 0, queryBucketAssets: 1 }));
-    db.exec("INSERT INTO workspace_capability VALUES ('digest','alpha','2026-09-08','mapping'); INSERT INTO recall_item VALUES ('usg10','usg1','ast1','hash','GLOBAL',NULL,'[\"QUERY_MATCH\"]','QUERY',NULL,'ON_DEMAND','[]',0); INSERT INTO read_operation VALUES ('usg11','[]','ast1','hash','GLOBAL',NULL,'usg10','2026-09-08'); INSERT INTO used_event VALUES ('usg12','[]','usg10',NULL,'ast1','2026-09-08')");
-    for (const status of ["CURRENT", "PREVIOUS"]) db.prepare("INSERT INTO asset_content_version VALUES ('ast1',?,?,?,'2026-09-08')").run(status, Buffer.from(status), createHash("sha256").update(status).digest("hex"));
-    const tables = ["workspace_capability", "read_operation", "used_event", "asset_content_version", "asset_catalog"];
-    const preserved = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
-    const preservedFts = db.prepare("SELECT rowid FROM asset_fts WHERE asset_fts MATCH 'DictConfig'").all();
-    const itemColumns = "recall_item_id,recall_id,asset_id,content_hash,asset_scope,asset_workspace,delivered_mode,delivery_reasons_json,ordinal";
-    const preservedItems = db.prepare(`SELECT ${itemColumns} FROM recall_item`).all();
-    const operationColumns = "recall_id,authorized_workspaces_json,occurred_at";
-    const preservedOperations = db.prepare(`SELECT ${operationColumns} FROM recall_operation ORDER BY recall_id`).all();
-    assert.throws(() => new KnowledgeRepository(path), rejectsWith("KNOWLEDGE_MIGRATION_REQUIRED"));
-    assert.equal(db.pragma("user_version", { simple: true }), version);
-    migrateRecallStorage(path); migrateRecallStorage(path);
-    assert.equal(db.pragma("user_version", { simple: true }), 5);
-    const rows = db.prepare<[], { queries_json: string }>("SELECT queries_json FROM recall_operation ORDER BY recall_id").all();
-    assert.deepEqual(rows.map(row => JSON.parse(row.queries_json) as string[]), expressions);
-    assert.deepEqual(db.prepare(`SELECT ${operationColumns} FROM recall_operation ORDER BY recall_id`).all(), preservedOperations);
-    const metadata = db.prepare<[], { diagnostics_json: string; budget_json: string }>(
-      "SELECT diagnostics_json,budget_json FROM recall_operation WHERE recall_id='usg1'").get()!;
-    assert.deepEqual(JSON.parse(metadata.diagnostics_json), ["CHARACTER_LIMIT", "POLICYX_RESERVED"]);
-    assert.deepEqual(JSON.parse(metadata.budget_json), { deliveredAssets: 1, modelVisibleCharacters: 4321 });
-    assert.deepEqual(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()), preserved);
-    assert.deepEqual(db.prepare("SELECT rowid FROM asset_fts WHERE asset_fts MATCH 'DictConfig'").all(), preservedFts);
-    assert.equal(preservedFts.length, 1);
-    assert.deepEqual(db.prepare(`SELECT ${itemColumns} FROM recall_item`).all(), preservedItems);
-    assert.deepEqual(db.prepare("PRAGMA table_info(recall_item)").all().map(row => (row as { name: string }).name), itemColumns.split(","));
-    assert.deepEqual(db.prepare("PRAGMA table_info(recall_operation)").all().map(row => (row as { name: string }).name),
-      ["recall_id", "authorized_workspaces_json", "queries_json", "occurred_at", "diagnostics_json", "budget_json"]);
-    assert.deepEqual(db.pragma("foreign_key_check"), []);
-    const repository = new KnowledgeRepository(path); repository.close();
-    const content = new AssetContentVersionRepository(path); content.close();
-    assert.equal(migrateKnowledge(path), 5); assert.equal(migrateKnowledge(path, true), 5);
-  }
-});
-
-test("migration failure rolls back schema and data; CLI requires explicit offline mode and can retry", async t => {
-  const root = await mkdtemp(join(tmpdir(), "codex-query-rollback-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const path = join(root, "knowledge.sqlite"); createLegacyRecallDatabase(path, 2);
-  const db = new Database(path); t.after(() => db.close());
-  db.pragma("foreign_keys=OFF");
-  db.exec("INSERT INTO read_operation VALUES ('usg1','[]','ast1','hash','GLOBAL',NULL,'usg404','2026-09-08')");
-  assert.throws(() => migrateRecallStorage(path), rejectsWith("KNOWLEDGE_SCHEMA_INVALID"));
-  assert.equal(db.pragma("user_version", { simple: true }), 2);
-  assert.doesNotThrow(() => db.prepare("SELECT query FROM recall_operation").all());
-  assert.throws(() => db.prepare("SELECT queries_json FROM recall_operation").all());
-  db.exec("DELETE FROM read_operation");
-  const stdout = new PassThrough(), stderr = new PassThrough();
-  let output = "", errors = ""; stdout.on("data", chunk => { output += String(chunk); }); stderr.on("data", chunk => { errors += String(chunk); });
-  const env = { PRECEDENT_LOOP_DATABASE_PATH: path };
-  assert.equal(await runMaintenanceCli(["migrate-recall"], env, stdout, stderr), 1);
-  assert.ok(errors.includes("--offline")); assert.equal(db.pragma("user_version", { simple: true }), 2);
-  assert.equal(await runMaintenanceCli(["migrate-recall", "--offline"], env, stdout, stderr), 0);
-  assert.deepEqual(JSON.parse(output), { ok: true, schemaVersion: 5 });
-  db.pragma("user_version=99");
-  assert.throws(() => migrateRecallStorage(path), rejectsWith("KNOWLEDGE_SCHEMA_UNSUPPORTED"));
-  assert.equal(db.pragma("user_version", { simple: true }), 99);
 });

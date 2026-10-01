@@ -27,6 +27,7 @@ import {
   type RestSuccessResponse,
 } from "./contracts/index.js";
 import type { OverviewApplicationService } from "./overview.js";
+import { DatabaseSchemaError } from "../storage/schema.js";
 import { RestError, invalidRequest } from "./errors.js";
 import {
   HubAssetApplicationService,
@@ -333,6 +334,7 @@ function mapRestError(error: unknown, onInternalError: ((error: unknown) => void
       retryable: true,
     });
   }
+  if (error instanceof DatabaseSchemaError) return new RestError(503, { code: error.code, message: error.message, retryable: false });
   if (error instanceof KnowledgeError) return new RestError(503, { code: error.code, message: error.code, retryable: true });
   onInternalError?.(error);
   return new RestError(500, {

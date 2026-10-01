@@ -18,7 +18,7 @@ import {
   confirmInboxAsset, scanAssetFiles, scanAssetRepository, scanInboxRepository,
 } from "../src/asset/index.js";
 import { HubAssetApplicationService, SystemStatusApplicationService } from "../src/http/index.js";
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase } from "../test-support/knowledge-fixture.js";
 
 const ids = new SnowflakeIdGenerator();
 const headers = [
@@ -200,8 +200,8 @@ async function createFixture() {
   await writeFile(join(repositoryPath, formalPath), formalSource);
   await writeFile(join(repositoryPath, inboxPath), inboxSource);
   const options = { repositoryPath, databasePath, workspaceConfigPath };
-  migrateKnowledge(databasePath, false, true);
-  migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
+
   const index = await AssetIndexManager.create(options);
   await index.synchronize();
   const runtime = knowledgeRuntime(options, () => index.status(), () => index.synchronize());

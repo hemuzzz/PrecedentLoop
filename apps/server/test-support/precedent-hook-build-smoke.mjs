@@ -1,10 +1,10 @@
+import { initializeDatabase } from "../dist/storage/schema.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { migrateKnowledge } from "../dist/knowledge/repository.js";
 import { readIntegrationActivity } from "../dist/integration-activity.js";
 
 // Isolated compiled entry + the actual rendered shell template, never an installed Hook.
@@ -16,7 +16,7 @@ try {
   for (const directory of [userData, join(data, "runtime"), join(data, "config"), join(home, ".codex"), join(userData, "agents/claude"), helperDirectory, join(runtime, "apps/server")]) await mkdir(directory, { recursive: true });
   await writeFile(join(userData, "app-config.json"), JSON.stringify({ configVersion: 1, setupVersion: 1, setupCompleted: false, dataDirectory: data }));
   await writeFile(join(data, "config/workspaces.json"), '{"schemaVersion":1,"workspaces":[]}');
-  migrateKnowledge(join(data, "runtime/precedent-loop.sqlite"), false, true);
+  initializeDatabase(join(data, "runtime/precedent-loop.sqlite"));
   await symlink(process.execPath, join(helperDirectory, "PrecedentLoop-Test-dist Helper"));
   await cp(fileURLToPath(new URL("../dist/", import.meta.url)), join(runtime, "apps/server/dist"), { recursive: true });
   await symlink(fileURLToPath(new URL("../node_modules/", import.meta.url)), join(runtime, "apps/server/node_modules"));

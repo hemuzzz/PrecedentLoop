@@ -586,7 +586,7 @@ function presentError(
                 <td>
                   <button type="button" class="asset-title-button" :title="asset.title" :aria-current="asset.assetId === selectedAssetId ? 'true' : undefined" @click.stop="openAsset(asset.assetId)">
                     <span class="asset-title-copy">
-                      <span class="asset-title-text">{{ asset.title }}</span>
+                      <span class="asset-title-text"><span v-if="asset.knowledgeNumber != null">#{{ asset.knowledgeNumber }} · </span>{{ asset.title }}</span>
                       <span v-if="appliedQuery && asset.matchedSnippet && asset.matchedSnippet.replace(/<\/?mark\b[^>]*>/giu, '').trim() !== asset.title.trim()" class="asset-snippet">{{ asset.matchedSnippet }}</span>
                     </span>
                   </button>
@@ -637,7 +637,7 @@ function presentError(
         </div>
         <article v-else-if="assetDetail" class="asset-detail">
           <span class="asset-type" :class="`asset-tone-${assetDetail.type}`">{{ displayValue(assetDetail.type) }}</span>
-          <h2>{{ assetDetail.title }}</h2>
+          <h2><span v-if="assetDetail.knowledgeNumber != null">#{{ assetDetail.knowledgeNumber }} · </span>{{ assetDetail.title }}</h2>
           <div class="asset-detail-tags">
             <span class="pill">{{ assetDetail.scope === "GLOBAL" ? "全局知识" : assetDetail.workspace }}</span>
             <span class="pill">{{ shortDate(assetDetail.modifiedAt) }} 更新</span>
@@ -721,6 +721,8 @@ function presentError(
         <div v-else class="candidate-list">
           <article v-for="item in inboxPageItems" :key="item.assetId" class="candidate-card" :class="{ selected: selectedInboxItem?.assetId === item.assetId }" @click="openInbox(item)">
             <div class="candidate-card-head">
+              <span v-if="item.candidateId" class="pill">候选 #{{ item.candidateId }}</span>
+              <span v-if="item.intent === 'REVISION' && item.knowledgeNumber != null" class="pill">修订 #{{ item.knowledgeNumber }}</span>
               <span class="asset-type" :class="`asset-tone-${item.type}`">{{ displayValue(item.type) }}</span>
               <span class="pill">{{ item.workspace ?? '全局' }}</span>
               <span class="candidate-status" :data-status="inboxChangeType(item)">{{ inboxChangeType(item) }}</span>
@@ -780,6 +782,8 @@ function presentError(
               <button type="button" class="secondary-button" @click="inboxOriginalExpanded = false; inboxOriginalOpen = true">查看原文<UiIcon name="external" /></button>
             </header>
             <dl class="inbox-candidate-meta">
+              <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd>候选 #{{ selectedInboxItem.candidateId }}</dd></div>
+              <div v-if="selectedInboxItem.intent === 'REVISION' && selectedInboxItem.knowledgeNumber != null"><dt>修订目标</dt><dd>修订 #{{ selectedInboxItem.knowledgeNumber }}</dd></div>
               <div><dt>工作区</dt><dd :title="selectedInboxItem.workspace ?? '全局'">{{ selectedInboxItem.workspace ?? '全局' }}</dd></div>
               <div><dt>内容类型</dt><dd><span class="asset-type" :class="`asset-tone-${selectedInboxItem.type}`">{{ displayValue(selectedInboxItem.type) }}</span></dd></div>
               <div><dt>变更类型</dt><dd><span class="candidate-status" :data-status="inboxChangeType(selectedInboxItem)">{{ inboxChangeType(selectedInboxItem) }}</span></dd></div>
@@ -797,7 +801,7 @@ function presentError(
                 <details class="detail-disclosure">
                   <summary>完整元信息</summary>
                   <dl class="metadata-sheet">
-                    <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd><code>{{ selectedInboxItem.candidateId }}</code></dd></div>
+                    <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd><code>候选 #{{ selectedInboxItem.candidateId }}</code></dd></div>
                     <div><dt>资产 ID</dt><dd><code>{{ selectedInboxItem.assetId }}</code></dd></div>
                     <div><dt>范围</dt><dd>{{ displayValue(selectedInboxItem.scope) }}</dd></div>
                     <div><dt>工作区</dt><dd>{{ selectedInboxItem.workspace ?? "全局知识" }}</dd></div>
@@ -953,7 +957,7 @@ select:disabled { opacity: .5; cursor: default; }
 .asset-detail-info .metadata-sheet code { overflow-wrap: anywhere; }
 
 /* 知识候选 */
-.inbox-page :deep(.candidate-manager) { max-width: 920px; width: 100%; }
+.inbox-page :deep(.candidate-manager) { width: 100%; }
 .inbox-page :deep(.candidate-toolbar) { gap: 10px 14px; }
 .inbox-toolbar { padding: 0; }
 .inbox-search { display: flex; flex: 1 1 220px; align-items: center; gap: 8px; min-width: 180px; max-width: 320px; height: 32px; margin-left: auto; padding: 0 8px 0 10px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
@@ -968,7 +972,7 @@ select:disabled { opacity: .5; cursor: default; }
 .inbox-help-copy h2 { color: var(--ink); font-size: 13px; margin-bottom: 10px; }
 .inbox-help-copy p + p { margin-top: 8px; }
 .candidate-scroll { padding: 0 4px; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
-.candidate-list { display: grid; gap: 12px; max-width: 920px; }
+.candidate-list { display: grid; gap: 12px; }
 .candidate-card { display: grid; gap: 6px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); cursor: default; }
 .candidate-card.selected { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
 .candidate-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -1001,7 +1005,6 @@ select:disabled { opacity: .5; cursor: default; }
 .inbox-diagnostics > summary { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .inbox-diagnostics > summary .ui-icon { color: var(--warning); }
 .inbox-diagnostics .diagnostic-list { margin-top: 12px; }
-.candidate-pagination { max-width: 920px; }
 .candidate-spinner { flex-shrink: 0; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: candidate-spin 1s linear infinite; }
 @keyframes candidate-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .candidate-spinner { animation: none; } }

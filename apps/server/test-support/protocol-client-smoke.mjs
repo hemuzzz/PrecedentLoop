@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../dist/storage/schema.js";
 // Actual Codex CLI and Hook transport, scripted loopback model only.
 // No live-model decisions, credentials copied, or real knowledge data in the fixture.
 import assert from "node:assert/strict";
@@ -7,7 +8,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { migrateKnowledge } from "../dist/knowledge/repository.js";
 
 const root = await mkdtemp(join(tmpdir(), "codex-protocol-client-"));
 const installedHome = process.env.PRECEDENT_LOOP_TEST_CODEX_HOME;
@@ -35,7 +35,7 @@ try {
   if (!installedHome) {
     await mkdir(home);
     await writeFile(join(home, "AGENTS.md"), "保护已有文件；不提交代码。\n");
-    const databasePath = join(root, "fixture.sqlite"); migrateKnowledge(databasePath, false, true);
+    const databasePath = join(root, "fixture.sqlite"); initializeDatabase(databasePath);
     const workspaceConfigPath = join(root, "workspaces.json");
     await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [] }));
     const wrapper = join(root, "hook.mjs");

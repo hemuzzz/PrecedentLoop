@@ -21,6 +21,7 @@ export type AssetFrontmatter =
 
 export interface AssetLibraryItem {
   assetId: string;
+  knowledgeNumber: number | null;
   contentHash: string;
   matchedSnippet?: string;
   modifiedAt: string;
@@ -50,6 +51,7 @@ export interface AssetDetail extends AssetLibraryItem {
 }
 
 export interface InboxItem {
+  knowledgeNumber: number | null;
   candidateId?: string;
   intent?: "NEW" | "REVISION";
   reviewBucket?: "PENDING" | "DEFERRED";

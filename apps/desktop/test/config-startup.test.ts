@@ -92,14 +92,13 @@ test("startup classifies every directory outcome before starting a backend", () 
   assert.equal(invalid.mode, "RECOVERY");
   assert.ok(invalid.mode !== "NORMAL" && invalid.code === "CONFIG_INVALID" && invalid.reason.includes("坏 JSON"));
   const config = appConfigSchema.parse(draft);
-  assert.equal(determineStartupMode({ kind: "VALID", config }, { kind: "PRODUCT", storageVersion: 6 }).mode, "SETUP");
+  assert.equal(determineStartupMode({ kind: "VALID", config }, { kind: "PRODUCT", storageVersion: 1 }).mode, "SETUP");
   assert.equal(determineStartupMode({ kind: "VALID", config }, { kind: "MISSING" }).mode, "SETUP");
   const complete = { kind: "VALID" as const, config: { ...config, setupCompleted: true } };
-  assert.deepEqual(determineStartupMode(complete, { kind: "PRODUCT", storageVersion: 6 }), { mode: "NORMAL", dataDirectory: config.dataDirectory });
+  assert.deepEqual(determineStartupMode(complete, { kind: "PRODUCT", storageVersion: 1 }), { mode: "NORMAL", dataDirectory: config.dataDirectory });
   const cases: Array<[DataDirectoryInspection | undefined, string]> = [
     [{ kind: "MISSING" }, "DATA_MISSING"], [{ kind: "EMPTY" }, "DATA_NOT_PRODUCT"], [{ kind: "OTHER_NON_EMPTY" }, "DATA_NOT_PRODUCT"],
     [{ kind: "NOT_WRITABLE", reason: "无权限" }, "DATA_INACCESSIBLE"],
-    [{ kind: "PRODUCT_UPGRADABLE", storageVersion: 5 }, "STORAGE_UPGRADE_REQUIRED"],
     [{ kind: "PRODUCT_INCOMPLETE" }, "STORAGE_INCOMPLETE"],
     [{ kind: "PRODUCT_UNSUPPORTED", storageVersion: 7, reason: "版本太新" }, "STORAGE_UNSUPPORTED"], [undefined, "DATA_UNCHECKED"],
     [{ kind: "SYNC_RISK", inspection: { kind: "NOT_WRITABLE", reason: "无权限" } }, "DATA_INACCESSIBLE"],
@@ -110,7 +109,7 @@ test("startup classifies every directory outcome before starting a backend", () 
     assert.ok(mode.mode !== "NORMAL" && mode.code === code && mode.reason.length > 0);
     assert.equal(mode.dataDirectory, config.dataDirectory);
   }
-  assert.equal(determineStartupMode(complete, { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 6 } }).mode, "NORMAL");
+  assert.equal(determineStartupMode(complete, { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 1 } }).mode, "NORMAL");
   const failure = backendFailureMode(config.dataDirectory, new Error("端口被占用"), "/temporary/desktop.log");
   assert.equal(failure.mode, "RECOVERY");
   assert.ok(failure.mode !== "NORMAL" && failure.code === "BACKEND_FAILED");

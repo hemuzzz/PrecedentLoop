@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -5,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import { migrateKnowledge } from "../src/knowledge/repository.js";
 import { readIntegrationActivity } from "../src/integration-activity.js";
 import { CHECK_UNAVAILABLE } from "../src/hook/capture-assessment.js";
 
@@ -20,7 +20,7 @@ async function fixture(t: TestContext) {
   const config = { configVersion: 1, setupVersion: 1, setupCompleted: false, dataDirectory: data };
   await writeFile(join(userData, "app-config.json"), JSON.stringify(config));
   await writeFile(join(data, "config/workspaces.json"), JSON.stringify({ schemaVersion: 1, workspaces: [] }));
-  migrateKnowledge(join(data, "runtime/precedent-loop.sqlite"), false, true);
+  initializeDatabase(join(data, "runtime/precedent-loop.sqlite"));
   async function invoke(host: string, event: string, input: unknown, customEnv: NodeJS.ProcessEnv = {}) {
     const started = performance.now();
     const child = spawn(process.execPath, [...(dist ? [] : ["--import", "tsx"]), entry, host, event, ...testIdentity], {

@@ -69,8 +69,7 @@ try {
   );
   await mkdir(dirname(databasePath), { recursive: true });
   // Startup never migrates; use the compiled offline installation commands.
-  await runNodeOk(join("dist", "maintenance-cli.js"), ["migrate-knowledge", "--offline", "--initialize"]);
-  await runNodeOk(join("dist", "maintenance-cli.js"), ["migrate-candidates", "--offline"]);
+  await runNodeOk(join("dist", "maintenance-cli.js"), ["init-database", "--offline"]);
   // WorkspaceCapability is issued only by the trusted host adapter.
   const capabilityId = parseCapabilities((await runNodeOk(
     join("dist", "hook", "user-prompt-submit.js"),

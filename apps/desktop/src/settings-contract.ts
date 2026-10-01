@@ -22,7 +22,7 @@ export interface LocalSettings {
   lastDataMove: DataMoveResult | null;
 }
 /** migrate: copy the current data directory to a new, empty location (T2-b).
- * associate: switch to an existing storage-6 data directory without merging (T2-c). */
+ * associate: switch to an existing baseline-1 data directory without merging (T2-c). */
 export type DataMoveMode = "migrate" | "associate";
 export interface DataMovePlan {
   /** null when the selected location cannot be used; `reason` explains why. */

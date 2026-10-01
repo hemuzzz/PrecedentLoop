@@ -22,7 +22,7 @@ export async function allocatePort(): Promise<number> {
 export async function prepareFixture(resources: string, directory: string): Promise<{ config: RuntimeConfig; capability: string; assetId: string }> {
   const runtime = join(resources, "runtime");
   await initializeDataDirectory(directory, runtime);
-  assert.deepEqual(await inspectDataDirectory(directory), { kind: "PRODUCT", storageVersion: 6 });
+  assert.deepEqual(await inspectDataDirectory(directory), { kind: "PRODUCT", storageVersion: 1 });
   const nodePath = await verifyBundledNode(runtime);
   const repository = join(directory, "repository");
   const config = runtimeConfig(appConfigSchema.parse({ configVersion: 1, setupVersion: 1, setupCompleted: true,
@@ -98,7 +98,7 @@ export async function verifyPackagedService(resources: string): Promise<void> {
     }));
     await backend.stop();
     await closed;
-    process.stdout.write(JSON.stringify({ isolatedService: "PASS", buildId: build.buildId, checks: ["initialize-schema-6", "IPC", "readiness", "Hub", "Recall/Read/Used", "Origin", "shutdown"] }) + "\n");
+    process.stdout.write(JSON.stringify({ isolatedService: "PASS", buildId: build.buildId, checks: ["initialize-baseline-1", "IPC", "readiness", "Hub", "Recall/Read/Used", "Origin", "shutdown"] }) + "\n");
   } finally {
     await backend?.stop();
     await rm(directory, { recursive: true, force: true });

@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 const dist = process.env.PRECEDENT_LOOP_TEST_DIST === "1";
 const modules = new URL(dist ? "../dist/" : "../src/", import.meta.url);
+const { initializeDatabase }: typeof import("../src/storage/schema.js") = await import(new URL("storage/schema.js", modules).href);
 const { handleCodexHook }: typeof import("../src/hook/user-prompt-submit.js") = await import(new URL("hook/user-prompt-submit.js", modules).href);
-const { migrateKnowledge, KnowledgeRepository }: typeof import("../src/knowledge/repository.js") = await import(new URL("knowledge/repository.js", modules).href);
+const { KnowledgeRepository }: typeof import("../src/knowledge/repository.js") = await import(new URL("knowledge/repository.js", modules).href);
 const { WorkspaceCapabilityService }: typeof import("../src/workspace/capability.js") = await import(new URL("workspace/capability.js", modules).href);
 
 async function fixture(t: TestContext) {
@@ -19,7 +20,7 @@ async function fixture(t: TestContext) {
   for (const path of [join(home, "AGENTS.md"), join(cwd, "AGENTS.md")]) await writeFile(path, "保留用户工作区；不提交代码。\n");
   const databasePath = join(root, "knowledge.sqlite");
   const workspaceConfigPath = join(root, "workspaces.json");
-  migrateKnowledge(databasePath, false, true);
+  initializeDatabase(databasePath);
   await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [
     { name: "target", paths: [join(root, "target")], aliases: ["目标项目"], knowledgeAccess: "PREAUTHORIZED" },
   ] }));

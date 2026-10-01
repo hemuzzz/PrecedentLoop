@@ -1,3 +1,5 @@
+import { initializeDatabase } from "../src/storage/schema.js";
+import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,15 +33,17 @@ test("overview graph projects qualified titles and pending status with exact cou
     await symlink(formal.path, join(dirname(formal.path), "linked.md"));
     const options = { repositoryPath, workspaceConfigPath };
     const inboxService = new InboxApplicationService(options, { existingCatalogAssetIds: () => new Set([formal.id]) });
+    const databasePath = join(root, "data.sqlite"); initializeDatabase(databasePath);
+    const repository = new KnowledgeRepository(databasePath);
     const service = new OverviewApplicationService({ ...options, inboxService,
-      projection: { totals: () => ({ recallOperations: 5, recallItems: 9, reads: 3, used: 2 }) } });
+      projection: { repository, totals: () => ({ recallOperations: 5, recallItems: 9, reads: 3, used: 2 }) } });
     const result = await service.get();
     assert.deepEqual(result.scopes.map(s => s.workspace), [null, "alpha", "empty"]);
     const scope = result.scopes.find(s => s.workspace === "alpha")!;
     assert.equal(scope.assets.MEMORY, 1);
     assert.equal(scope.inboxCount, 1);
-    assert.deepEqual(scope.items.find(i => i.assetId === formal.id), { assetId: formal.id, title: "正式记忆", type: "MEMORY", pending: false });
-    assert.deepEqual(scope.items.find(i => i.assetId === pending.id), { assetId: pending.id, title: "待确认记忆", type: "MEMORY", pending: true });
+    assert.deepEqual(scope.items.find(i => i.assetId === formal.id), { assetId: formal.id, title: "正式记忆", type: "MEMORY", pending: false, knowledgeNumber: null });
+    assert.deepEqual(scope.items.find(i => i.assetId === pending.id), { assetId: pending.id, title: "待确认记忆", type: "MEMORY", pending: true, candidateId: null, knowledgeNumber: null });
     assert.equal(result.scopes.at(-1)!.items.length, 0);
     assert.ok(result.diagnosticCount >= 2);
     assert.ok(!JSON.stringify(result).includes("不应随图谱返回的正文"));
@@ -49,5 +53,6 @@ test("overview graph projects qualified titles and pending status with exact cou
     assert.ok(!refreshed.scopes.flatMap(s => s.items).some(i => i.assetId === formal.id));
     await writeFile(workspaceConfigPath, "invalid");
     await assert.rejects(service.get(), { code: "ASSET_SEARCH_UNAVAILABLE" });
+    repository.close();
   } finally { await rm(root, { recursive: true, force: true }); }
 });

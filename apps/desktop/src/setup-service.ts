@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { detectAgent } from "./agent-detection.js";
 import { appConfigSchema, dataPaths, readAppConfig, readBuildInfo, serializeAppConfig, writeAppConfig, type AppConfig } from "./config.js";
-import { copyDataDirectory, ensureMarker, initializeStorage, inspectDataDirectory, pathsOverlap, prepareDirectoryLayout, readStorageVersion, rebindCoordination, upgradeDataDirectory, type DataDirectoryInspection } from "./data-directory.js";
+import { copyDataDirectory, ensureMarker, initializeStorage, inspectDataDirectory, pathsOverlap, prepareDirectoryLayout, readStorageVersion, rebindCoordination, type DataDirectoryInspection } from "./data-directory.js";
 import { backendFailureMode, determineStartupMode, type StartupMode } from "./startup.js";
 import { readSetupState, setupDraftSchema, writeSetupState } from "./setup-state.js";
 import type { AgentDetection, AgentName, CoreCheck, DirectoryCheck, PreparationProgress, PreparationStep, PrepareRequest, SettingsSnapshot, SetupDraft, SetupSnapshot, SetupStateFile } from "./setup-contract.js";
@@ -319,8 +319,10 @@ export class SetupService {
     let reason: string | null = null;
     if (await pathsOverlap(from, to)) reason = "新位置不能是当前数据目录、其子目录或上级目录。";
     else if (mode === "migrate" && !["MISSING", "EMPTY"].includes(kind)) reason = kind === "NOT_WRITABLE" ? `无法写入所选位置：${(inner(inspection) as { reason: string }).reason}` : "迁移目标必须是不存在或空的目录；已有知识库请使用“关联其他数据目录”。";
-    else if (mode === "associate" && kind !== "PRODUCT") reason = kind === "PRODUCT_UPGRADABLE" ? "所选知识库为存储版本 5，需要先升级后才能关联。"
-      : kind === "NOT_WRITABLE" ? `无法读写所选目录：${(inner(inspection) as { reason: string }).reason}` : "请选择存储版本 6 的已有本产品数据目录；关联不会创建或覆盖文件。";
+    else if (mode === "associate" && kind !== "PRODUCT") {
+      const checked = inner(inspection);
+      reason = `${"reason" in checked ? `${checked.reason}。` : ""}请选择基线版本 1 的已有本产品数据目录；关联不会创建或覆盖文件。`;
+    }
     const plan: DataMovePlan = { planId: reason ? null : randomUUID(), mode, from, to, syncRisk: inspection.kind === "SYNC_RISK",
       statistics: reason ? {} : await statistics(mode === "migrate" ? from : to), reason };
     this.dataMovePlans.clear();
@@ -443,8 +445,8 @@ export class SetupService {
       port = config.kind === "VALID" && config.config.dataDirectory === target ? config.config.port : await chooseSetupPort(this.dependencies.portAvailable);
     } catch (error) { portReason = message(error); }
     return { selectedPath: path, dataDirectory: target, inspection, paths: dataPaths(target), port,
-      ...(portReason ? { portReason } : {}), backupRoot: join(this.dependencies.userData, "backups"),
-      ...(["PRODUCT", "PRODUCT_UPGRADABLE"].includes(inner(inspection).kind) ? { statistics: await statistics(target) } : {}) };
+      ...(portReason ? { portReason } : {}),
+      ...(inner(inspection).kind === "PRODUCT" ? { statistics: await statistics(target) } : {}) };
   }
   private async ensureBackend(config: AppConfig): Promise<void> {
     if (this.backendStarting) { await this.backendStarting; return; }
@@ -472,8 +474,7 @@ export class SetupService {
       const target = await inspectDataDirectory(path, this.dependencies.home);
       if ((target.kind === "SYNC_RISK" || checked.inspection.kind === "SYNC_RISK") && !request.syncRiskConfirmed) throw new Error("请先确认同步盘风险。");
       let kind = inner(target).kind;
-      if (!["MISSING", "EMPTY", "PRODUCT_INCOMPLETE", "PRODUCT", "PRODUCT_UPGRADABLE"].includes(kind)) throw new Error("目标不是可初始化或可用的本产品目录，请选择其他位置。");
-      if (kind === "PRODUCT_UPGRADABLE" && (!request.upgradeConfirmed || !request.writersStopped)) throw new Error("升级前请确认备份，并停止所有使用此知识库的其他程序和写入者。");
+      if (!["MISSING", "EMPTY", "PRODUCT_INCOMPLETE", "PRODUCT"].includes(kind)) throw new Error("目标不是可初始化或可用的本产品目录，请选择其他位置。");
       if (this.draft.dataDirectory !== path) this.progress.clear();
       this.draft.dataDirectory = path;
       this.draft.step = 1;
@@ -489,12 +490,7 @@ export class SetupService {
         this.emit("storage", "running");
         await this.dependencies.stopBackend();
         this.backendDirectory = undefined;
-        kind = inner(await inspectDataDirectory(path, this.dependencies.home)).kind;
-        if (kind === "PRODUCT_UPGRADABLE") {
-          await upgradeDataDirectory(path, join(this.dependencies.userData, "backups"), this.dependencies.runtime, options);
-        } else {
-          await initializeStorage(path, this.dependencies.runtime, options);
-        }
+        await initializeStorage(path, this.dependencies.runtime, options);
       }
       await ensureMarker(path, options);
       this.emit("storage", "done");
@@ -554,7 +550,7 @@ export class SetupService {
     const status = config ? await this.dependencies.backendStatus(config).catch(() => ({ serviceReady: false, mcpReady: false })) : { serviceReady: false, mcpReady: false };
     return [
       { id: "directory", ok: usable, detail: usable ? config!.dataDirectory : "数据目录不可用，请返回本地数据步骤查看原因。" },
-      { id: "storage", ok: usable, detail: usable ? "版本 6 · 候选存储已就绪" : "存储未就绪，需先完成初始化或备份升级。" },
+      { id: "storage", ok: usable, detail: usable ? "基线版本 1 · 存储已就绪" : "存储未就绪，请选择基线版本 1 的数据目录；新目录需先初始化。" },
       runtime,
       { id: "service", ok: status.serviceReady, detail: status.serviceReady ? "服务已启动 · 索引已就绪" : "本地服务与索引尚未就绪，请重试或打开日志。" },
       { id: "mcp", ok: status.serviceReady && status.mcpReady, detail: config ? `http://127.0.0.1:${config.port}/mcp` : "等待服务" },
@@ -596,7 +592,7 @@ export class SetupService {
   }
   async selectRecoveryDirectory(path: string): Promise<SetupSnapshot> {
     if (this.startup.mode !== "RECOVERY") throw new Error("仅恢复模式允许关联新的位置。");
-    if (inner(await inspectDataDirectory(path, this.dependencies.home)).kind !== "PRODUCT") throw new Error("请选择存储版本 6 的已有本产品数据目录，不会创建或覆盖文件。");
+    if (inner(await inspectDataDirectory(path, this.dependencies.home)).kind !== "PRODUCT") throw new Error("请选择基线版本 1 的已有本产品数据目录，不会创建或覆盖文件。");
     await this.dependencies.stopBackend();
     this.backendDirectory = undefined;
     const previous = await readAppConfig(this.dependencies.userData);

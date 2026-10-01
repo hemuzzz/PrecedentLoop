@@ -1,8 +1,8 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AssetCatalog, scanAssetRepository } from "./asset/index.js";
-import { KnowledgeRepository, migrateKnowledge, migrateRecallStorage } from "./knowledge/repository.js";
-import { migrateCandidateStore } from "./asset/candidate-repository.js";
+import { KnowledgeRepository } from "./knowledge/repository.js";
+import { DatabaseSchemaError, initializeDatabase } from "./storage/schema.js";
 import { rebindRepositoryCoordination } from "./asset/coordination.js";
 
 export async function runMaintenanceCli(
@@ -26,22 +26,10 @@ export async function runMaintenanceCli(
         const result = catalog.rebuild(snapshot.assets, new Date().toISOString());
         stdout.write(`${JSON.stringify({ ok: true, result, diagnostics: snapshot.diagnostics })}\n`);
       } finally { catalog.close(); }
-    } else if (command === "migrate-candidates") {
-      if (args.length !== 2 || args[1] !== "--offline") throw new Error("Use migrate-candidates --offline after stopping writers");
-      migrateCandidateStore(databasePath);
-      stdout.write('{"ok":true,"schemaVersion":6}\n');
-    } else if (command === "migrate-knowledge") {
-      if ((args.length !== 2 && args.length !== 3) || args[1] !== "--offline" || (args.length === 3 && args[2] !== "--initialize")) throw new Error("Use migrate-knowledge --offline [--initialize] after stopping writers");
-      const schemaVersion = migrateKnowledge(databasePath, false, args[2] === "--initialize");
-      stdout.write(`${JSON.stringify({ ok: true, schemaVersion })}\n`);
-    } else if (command === "migrate-recall") {
-      if (args.length !== 2 || args[1] !== "--offline") throw new Error("Use migrate-recall --offline after stopping the service and all same-database Hooks/writers");
-      const schemaVersion = migrateRecallStorage(databasePath);
-      stdout.write(`${JSON.stringify({ ok: true, schemaVersion })}\n`);
-    } else if (command === "retire-old-runtime") {
-      if (args.length !== 3 || args[1] !== "--offline" || !["--accept-data-deletion", "--accept-data-deletion-after-manual-verification"].includes(args[2] ?? "")) throw new Error("Explicit deletion acknowledgement required");
-      const schemaVersion = migrateKnowledge(databasePath, true);
-      stdout.write(`${JSON.stringify({ ok: true, schemaVersion })}\n`);
+    } else if (command === "init-database") {
+      if (args.length !== 2 || args[1] !== "--offline") throw new Error("Use init-database --offline for a new, empty database after stopping writers");
+      initializeDatabase(databasePath);
+      stdout.write('{"ok":true,"schemaVersion":1}\n');
     } else if (command === "rebind-coordination") {
       if (args.length !== 2 || args[1] !== "--offline") throw new Error("Use rebind-coordination --offline only for a stopped, copied data directory");
       const repositoryPath = absoluteEnvironment(environment, "PRECEDENT_LOOP_ASSET_REPOSITORY_PATH");
@@ -52,10 +40,10 @@ export async function runMaintenanceCli(
       const repository = new KnowledgeRepository(databasePath);
       try { stdout.write(JSON.stringify({ revoked: repository.db.prepare("DELETE FROM workspace_capability WHERE capability_key_hash=?").run(args[2]).changes }) + "\n"); }
       finally { repository.close(); }
-    } else { throw new Error("Expected rebuild-index, migrate-knowledge, migrate-recall, migrate-candidates, rebind-coordination, retire-old-runtime or revoke-capability"); }
+    } else { throw new Error("Expected init-database, rebuild-index, rebind-coordination or revoke-capability"); }
     return 0;
   } catch (error) {
-    stderr.write(`${JSON.stringify({ ok: false, error: { code: "MAINTENANCE_FAILED", message: error instanceof Error ? error.message : String(error) } })}\n`);
+    stderr.write(`${JSON.stringify({ ok: false, error: { code: error instanceof DatabaseSchemaError ? error.code : "MAINTENANCE_FAILED", message: error instanceof Error ? error.message : String(error) } })}\n`);
     return 1;
   }
 }

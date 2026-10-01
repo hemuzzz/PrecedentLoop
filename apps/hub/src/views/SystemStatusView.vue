@@ -180,7 +180,7 @@ function formatUptime(seconds: number): string {
 .system-page :deep(.page-heading p) { margin-top: 2px; font-size: 13px; line-height: 18px; }
 .system-page :deep(.page-actions .quiet-button) { height: 34px; padding-inline: 12px; gap: 8px; border-color: var(--line); font-size: 13px; }
 .system-content { padding: 0; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
-.system-dashboard { display: grid; gap: 16px; max-width: 1080px; }
+.system-dashboard { display: grid; gap: 16px; }
 .system-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .system-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .system-card-heading { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; }

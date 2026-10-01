@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../dist/storage/schema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -8,8 +9,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { AssetContentVersionRepository } from "../dist/asset/content-version.js";
-import { migrateCandidateStore } from "../dist/asset/candidate-repository.js";
-import { migrateKnowledge } from "../dist/knowledge/repository.js";
 
 const execFileAsync = promisify(execFile);
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -43,8 +42,8 @@ try {
   await mkdir(join(repositoryPath, "assets"), { recursive: true });
   await writeFixture(join(repositoryPath, sourceRelativePath), source);
   // Confirmation requires the explicitly migrated candidate store.
-  migrateKnowledge(join(fixtureRoot, "confirm.sqlite"), false, true);
-  migrateCandidateStore(join(fixtureRoot, "confirm.sqlite"));
+  initializeDatabase(join(fixtureRoot, "confirm.sqlite"));
+
 
   const { stdout, stderr } = await execFileAsync(
     "pnpm",

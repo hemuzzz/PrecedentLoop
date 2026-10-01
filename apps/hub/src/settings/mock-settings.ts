@@ -10,7 +10,7 @@ type LocalBridge = Pick<SettingsBridge, "getLocalSettings" | "revealSettingsPath
 /** Loaded only through DEV dynamic imports. All state is in memory. */
 export function createLocalSettingsMock(scenario: string, options: URLSearchParams, integration: Pick<SettingsBridge, "planIntegrations">): LocalBridge {
   const directory = "/Users/alex/PrecedentLoop";
-  const local: LocalSettings = { dataDirectory: directory, paths: { assetRepositoryPath: `${directory}/repository`, databasePath: `${directory}/runtime/precedent-loop.sqlite`, workspaceConfigPath: `${directory}/config/workspaces.json`, logPath: `${directory}/logs/server.log`, desktopLogPath: `${directory}/logs/desktop.log` }, storageVersion: 6,
+  const local: LocalSettings = { dataDirectory: directory, paths: { assetRepositoryPath: `${directory}/repository`, databasePath: `${directory}/runtime/precedent-loop.sqlite`, workspaceConfigPath: `${directory}/config/workspaces.json`, logPath: `${directory}/logs/server.log`, desktopLogPath: `${directory}/logs/desktop.log` }, storageVersion: 1,
     runtime: { nodeVersion: "v22.16.0", arch: "arm64", modules: "127" }, port: 18888, pendingPort: ["T8-b", "T8-d"].includes(scenario) ? 18889 : null, lastRestart: null, lastDataMove: null };
   let overrides: AiOverrides = {};
   const defaults: AiConfiguration["defaults"] = [{ id: "codex", executable: "/opt/homebrew/bin/codex", timeoutMs: 600000 }, { id: "claude", executable: "/Users/alex/.local/bin/claude", timeoutMs: 600000 }];

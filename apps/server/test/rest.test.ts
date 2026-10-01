@@ -18,11 +18,31 @@ import {
   SystemStatusApplicationService,
 } from "../src/http/index.js";
 
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore, persistentRows } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase, persistentRows } from "../test-support/knowledge-fixture.js";
 
 const AUTHORITY = "127.0.0.1:3210";
 
 type RestFixture = Awaited<ReturnType<typeof createFixture>>;
+
+test("number synchronization preserves Recall/Read/Used and keeps numbers out of model-visible results", async () => {
+  const fixture = await createFixture();
+  try {
+    const before = await fixture.service.recall({ capabilityIds: [fixture.alpha], queries: ["shared knowledge alpha"] });
+    assert.ok(before.items.length > 0);
+    const read = await fixture.service.read({ capabilityIds: [fixture.alpha], recallItemId: before.items[0]!.recallItemId });
+    const rows = fixture.rows();
+    await fixture.indexManager.synchronize();
+    assert.deepEqual(fixture.rows(), rows);
+    await fixture.service.used({ capabilityIds: [fixture.alpha], recallItemId: before.items[0]!.recallItemId });
+    const after = await fixture.service.recall({ capabilityIds: [fixture.alpha], queries: ["shared knowledge alpha"] });
+    assert.ok(after.items.length > 0);
+    assert.equal(after.items[0]!.assetId, before.items[0]!.assetId);
+    for (const result of [before, read, after]) assert.equal(JSON.stringify(result).includes("knowledgeNumber"), false);
+    const response = await getJson(fixture, `/api/assets/${fixture.alphaAssetId}`);
+    assert.equal(response.status, 200);
+    assert.equal(typeof (dataObject(response.body).asset as Record<string, unknown>).knowledgeNumber, "number");
+  } finally { await fixture.close(); }
+});
 
 test("N09 Asset Library enforces full-library Workspace filters, strict parameters, and stable sorting", async () => {
   const fixture = await createFixture();
@@ -500,7 +520,7 @@ async function createFixture() {
   await utimes(globalAssetPath, new Date("2026-01-03T00:00:00.000Z"), new Date("2026-01-03T00:00:00.000Z"));
 
   await mkdir(join(rootPath, "data"), { recursive: true });
-  migrateKnowledge(databasePath, false, true); migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
   const indexManager = await AssetIndexManager.create({
     databasePath,
     repositoryPath,

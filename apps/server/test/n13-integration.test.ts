@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore, persistentRows } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase, persistentRows } from "../test-support/knowledge-fixture.js";
 
 import {
   AssetCatalog,
@@ -51,7 +51,7 @@ test("N13 proves the synthetic M03/M04 Inbox contract, Watcher recovery, and SQL
   );
 
   await mkdir(dirname(fixture.databasePath), { recursive: true });
-  migrateKnowledge(fixture.databasePath, false, true); migrateCandidateStore(fixture.databasePath);
+  initializeDatabase(fixture.databasePath);
   let manager = await AssetIndexManager.create({ ...fixture, debounceMs: 40 });
   let service: AssetSearchService | undefined;
   try {

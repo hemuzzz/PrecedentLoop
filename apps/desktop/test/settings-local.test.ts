@@ -134,7 +134,7 @@ test("AI overrides are strict; reset changes only AI and stages the default port
     assert.deepEqual(await readFile(dataPaths(original.dataDirectory).workspaceConfigPath), workspace);
     assert.deepEqual(await readFile(dataPaths(original.dataDirectory).databasePath), database);
     assert.deepEqual(f.calls, []);
-    assert.equal(reset.storageVersion, 6); assert.equal(reset.runtime.nodeVersion, "v24.21.0");
+    assert.equal(reset.storageVersion, 1); assert.equal(reset.runtime.nodeVersion, "v24.21.0");
   } finally { await f.cleanup(); }
 });
 

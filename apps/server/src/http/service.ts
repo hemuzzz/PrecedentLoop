@@ -21,6 +21,7 @@ const SERVICE_NAME = "precedent";
 const SERVICE_VERSION = "0.0.0";
 
 export interface AssetDetailDto {
+  knowledgeNumber: number | null;
   assetId: string;
   contentHash: string;
   frontmatter: Awaited<ReturnType<AssetSearchService["readLibrary"]>>["frontmatter"];
@@ -61,6 +62,7 @@ export class HubAssetApplicationService {
     const asset = await this.assetSearchService.readLibrary(assetId);
     return {
       assetId: asset.frontmatter.id,
+      knowledgeNumber: asset.knowledgeNumber,
       contentHash: asset.contentHash,
       frontmatter: asset.frontmatter,
       modifiedAt: asset.modifiedAt,

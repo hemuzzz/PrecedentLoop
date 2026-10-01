@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
@@ -37,9 +38,7 @@ import {
   parseArguments,
   runAssetConfirmationCli,
 } from "../src/asset/confirm-cli.js";
-import { migrateCandidateStore } from "../src/asset/candidate-repository.js";
 import { RepositoryOperationError } from "../src/asset/coordination.js";
-import { migrateKnowledge } from "../src/knowledge/repository.js";
 
 const idGenerator = new SnowflakeIdGenerator();
 const execFileAsync = promisify(execFile);
@@ -651,11 +650,11 @@ async function createFixture(
       ],
     }), "utf8"),
   );
-  // Current confirmation requires an explicitly initialized schema-6 store.
+  // Current confirmation requires an explicitly initialized baseline-1 store.
   const databasePath = join(rootPath, "data", "precedent-loop.sqlite");
   await mkdir(dirname(databasePath), { recursive: true });
-  migrateKnowledge(databasePath, false, true);
-  migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
+
   return {
     rootPath,
     repositoryPath,

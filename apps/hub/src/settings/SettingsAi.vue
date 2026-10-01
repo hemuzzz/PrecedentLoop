@@ -45,7 +45,7 @@ function effortOptions(agent: "codex" | "claude") {
 function defaultModelText(agent: "codex" | "claude") { return modelLabel(agent, configuration.value?.defaults.find(value => value.id === agent)?.model ?? catalog(agent)?.current.model) ?? "CLI 默认模型"; }
 function defaultEffortText(agent: "codex" | "claude") {
   const value = catalog(agent)?.current.effort ?? effectiveModel(agent)?.defaultEffort;
-  return value ? effortName(value) : "CLI 默认档位";
+  return value ? effortName(value) : agent === "claude" ? "Claude Code 默认档位" : "CLI 默认档位";
 }
 // Switching model drops a level the new model does not support.
 for (const agent of agents) watch(() => fields[agent].model, () => {
@@ -111,10 +111,10 @@ onMounted(async () => {
   <fieldset class="settings-form" :disabled="!editing || !bridge || busy"><label class="settings-field"><span>默认提供方</span><select v-model="provider"><option value="">默认 · {{ agentNames[configuration?.defaults[0]?.id ?? 'codex'] }}</option><option value="codex">Codex CLI</option><option value="claude">Claude Code</option></select></label></fieldset>
   <section v-for="agent in agents" :key="agent" class="settings-section"><h2>{{ agentNames[agent] }}</h2><div class="settings-field"><div class="settings-cli-path"><code>{{ cliPath(agent) }}</code><span v-if="!loading && !detectionFailed && detections.some(value => value.agent === agent)" class="setup-chip">{{ detections.find(value => value.agent === agent)?.source === 'manual' ? '手动指定' : '自动检测' }}</span></div><button class="setup-link" @click="navigate('settings', 'agents')">在 Agent 接入页修改</button></div>
     <fieldset class="settings-form" :disabled="!editing || !bridge || busy">
-      <label class="settings-field"><span>模型<small>不选时使用 {{ agentNames[agent] }} 自身的设置</small></span>
+      <label class="settings-field"><span>模型<small>不选时使用 {{ agentNames[agent] }} 自身的设置</small><small v-if="agent === 'claude'">在 Claude Code 的 settings.json 中设置完整模型名，即可显示具体版本。</small></span>
         <select v-if="catalog(agent)?.models.length" v-model="fields[agent].model"><option value="">默认 · {{ defaultModelText(agent) }}</option><option v-for="model in modelOptions(agent)" :key="model.id" :value="model.id">{{ model.label }}</option></select>
         <input v-else v-model="fields[agent].model" maxlength="256" :placeholder="`默认 · ${defaultModelText(agent)}`" /></label>
-      <label class="settings-field"><span>推理档位<small>档位越高越慢，整理质量通常更好</small></span>
+      <label class="settings-field"><span>推理档位<small>档位越高越慢，整理质量通常更好</small><small v-if="agent === 'claude'">在 Claude Code 的 settings.json 中设置 effortLevel，即可显示具体档位。</small></span>
         <select v-if="effortOptions(agent).length" v-model="fields[agent].effort"><option value="">默认 · {{ defaultEffortText(agent) }}</option><option v-for="level in effortOptions(agent)" :key="level" :value="level">{{ effortName(level) }}</option></select>
         <input v-else v-model="fields[agent].effort" maxlength="16" :placeholder="`默认 · ${defaultEffortText(agent)}`" /></label>
       <label class="settings-field"><span>超时（秒）<small v-if="loading">读取中…</small><small v-else-if="configuration?.defaults.find(value => value.id === agent)">默认：{{ configuration.defaults.find(value => value.id === agent)!.timeoutMs / 1000 }} 秒</small><small v-else>默认超时读取失败</small></span><input v-model="fields[agent].timeout" type="number" min="1" max="3600" step="1" placeholder="默认" /></label>

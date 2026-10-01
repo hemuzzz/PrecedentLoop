@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -418,6 +419,7 @@ async function createFixture(): Promise<Fixture> {
     }),
     "utf8",
   );
+  initializeDatabase(databasePath);
   return { databasePath, repositoryPath, rootPath, workspaceConfigPath };
 }
 

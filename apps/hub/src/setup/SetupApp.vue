@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import UiIcon from "../components/UiIcon.vue";
 import { setupBridge, type AgentDetection, type AgentName, type CoreCheck, type DirectoryCheck, type PreparationProgress,
   type SetupBridge, type SetupDraft, type SetupSnapshot } from "./bridge.js";
@@ -23,8 +23,6 @@ const detecting = ref(false);
 const error = ref("");
 const resumed = ref(false);
 const syncRiskConfirmed = ref(false);
-const writersStopped = ref(false);
-const upgradeDialog = ref<HTMLDialogElement>();
 const resetConfigDialog = ref<HTMLDialogElement>();
 const theme = ref<"dark" | "light" | "system">("dark");
 const previewScenario = ref("");
@@ -39,10 +37,10 @@ const preparing = computed(() => progress.value.length > 0 && step.value === 1);
 const failed = computed(() => progress.value.some(item => item.status === "failed"));
 // The check must describe the path on screen; a stale result never enables writing.
 const checkedCurrent = computed(() => Boolean(directory.value && draft.value && directory.value.selectedPath === draft.value.dataDirectory));
-const productKinds = ["PRODUCT", "PRODUCT_UPGRADABLE", "PRODUCT_INCOMPLETE"];
+const productKinds = ["PRODUCT", "PRODUCT_INCOMPLETE"];
 const dataMode = ref<"existing" | "new">("new");
 const modeMismatch = computed(() => !committed.value && checkedCurrent.value && inspection.value !== undefined
-  && (dataMode.value === "existing" ? !productKinds.includes(inspection.value.kind) : ["PRODUCT", "PRODUCT_UPGRADABLE"].includes(inspection.value.kind)));
+  && (dataMode.value === "existing" ? !productKinds.includes(inspection.value.kind) : ["PRODUCT"].includes(inspection.value.kind)));
 const canPrepare = computed(() => Boolean(checkedCurrent.value && directory.value!.port && inspection.value && !modeMismatch.value &&
   !["NOT_WRITABLE", "PRODUCT_UNSUPPORTED"].includes(inspection.value.kind) && (!syncRisk.value || syncRiskConfirmed.value)));
 const coreReady = computed(() => core.value.length === 5 && core.value.every(item => item.ok));
@@ -57,7 +55,6 @@ const directoryText = computed(() => {
   if (syncRisk.value) return "同步盘或网络盘可能损坏数据库，不建议使用";
   switch (inspection.value?.kind) {
     case "PRODUCT": return "找到已有知识库";
-    case "PRODUCT_UPGRADABLE": return "此知识库需要升级存储后才能使用候选管理";
     case "PRODUCT_INCOMPLETE": return "发现尚未完成的初始化，可以继续准备知识库";
     case "OTHER_NON_EMPTY": return "此目录已有其他文件";
     case "NOT_WRITABLE": return "没有写入权限";
@@ -71,14 +68,13 @@ const primaryText = computed(() => {
   if (step.value === 2 && allMissing.value) return "跳过";
   if (step.value !== 1 || committed.value) return "继续";
   if (inspection.value?.kind === "PRODUCT") return "使用此知识库";
-  if (inspection.value?.kind === "PRODUCT_UPGRADABLE") return "备份并升级";
   if (inspection.value?.kind === "PRODUCT_INCOMPLETE") return "继续初始化";
   if (inspection.value?.kind === "OTHER_NON_EMPTY") return "在其中新建 PrecedentLoop 文件夹";
   return "创建并继续";
 });
 const hasStep3Work = computed(() => integrations.activeAgents.length > 0 || integrations.selectedProjects.length > 0);
 const directoryTone = computed(() => committed.value || inspection.value?.kind === "PRODUCT" ? "ok"
-  : syncRisk.value || ["PRODUCT_UPGRADABLE", "OTHER_NON_EMPTY"].includes(inspection.value?.kind ?? "") ? "warn"
+  : syncRisk.value || ["OTHER_NON_EMPTY"].includes(inspection.value?.kind ?? "") ? "warn"
     : ["NOT_WRITABLE", "PRODUCT_UNSUPPORTED"].includes(inspection.value?.kind ?? "") ? "error" : "neutral");
 
 function plainDraft(): SetupDraft {
@@ -160,12 +156,10 @@ async function go(next: 1 | 2 | 3 | 4) {
   if (next === 3) await integrations.initialize(true);
   if (next === 4) { core.value = await bridge!.checkCore(); await integrations.initialize(false); }
 }
-async function prepare(upgradeConfirmed = false) {
-  upgradeDialog.value?.close();
+async function prepare() {
   await perform(async () => {
     try {
-      const value = await bridge!.prepareDirectory({ path: draft.value!.dataDirectory, syncRiskConfirmed: syncRiskConfirmed.value,
-        upgradeConfirmed, writersStopped: writersStopped.value });
+      const value = await bridge!.prepareDirectory({ path: draft.value!.dataDirectory, syncRiskConfirmed: syncRiskConfirmed.value });
       applySnapshot(value);
     } catch (reason) { applySnapshot(await bridge!.getState()); throw reason; }
     await detect();
@@ -174,7 +168,6 @@ async function prepare(upgradeConfirmed = false) {
 async function next() {
   if (step.value === 3 && integrations.phase === "selection" && hasStep3Work.value) { await integrations.configure(); return; }
   if (step.value === 1 && !committed.value) {
-    if (inspection.value?.kind === "PRODUCT_UPGRADABLE") { writersStopped.value = false; upgradeDialog.value?.showModal(); return; }
     await prepare(); return;
   }
   await perform(async () => {
@@ -187,8 +180,7 @@ async function next() {
 }
 async function retryPreparation() {
   try { await inspect(); } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); return; }
-  if (inspection.value?.kind === "PRODUCT_UPGRADABLE") { writersStopped.value = false; upgradeDialog.value?.showModal(); }
-  else await prepare();
+  await prepare();
 }
 async function retryCore() {
   await perform(async () => {
@@ -234,7 +226,6 @@ onMounted(async () => {
         if (step.value === 4) { core.value = await bridge!.checkCore(); await integrations.initialize(false); }
       }
     });
-    if (connection.scenario === "S1-c-confirm") { await nextTick(); upgradeDialog.value?.showModal(); }
     if (import.meta.env.DEV && connection.scenario) {
       if (["S3-e", "S3-f"].includes(connection.scenario)) { integrations.phase = "results"; integrations.applied = true; }
       if (connection.scenario === "S3-d") await integrations.configure();
@@ -301,14 +292,13 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeIntegration?.(); });
               </div>
             </template>
             <div v-if="preparing" class="setup-progress" aria-live="polite">
-              <div v-for="key in (['folders', 'storage', 'service'] as const)" :key="key" class="setup-progress-row"><span class="setup-progress-icon" :class="progress.find(item => item.step === key)?.status"><UiIcon :name="progress.find(item => item.step === key)?.status === 'done' ? 'tick' : progress.find(item => item.step === key)?.status === 'failed' ? 'close' : 'refresh'" /></span><div><h2>{{ progressNames[key] }}</h2><p class="setup-help">{{ progress.find(item => item.step === key)?.reason ?? (progress.find(item => item.step === key)?.status === 'done' ? key === 'folders' ? '知识文件、配置与日志目录已准备好' : key === 'storage' ? '存储版本 6 · 候选存储已就绪' : '本地服务已就绪' : key === 'service' ? '正在等待本地服务与索引就绪…' : '等待中') }}</p></div></div>
+              <div v-for="key in (['folders', 'storage', 'service'] as const)" :key="key" class="setup-progress-row"><span class="setup-progress-icon" :class="progress.find(item => item.step === key)?.status"><UiIcon :name="progress.find(item => item.step === key)?.status === 'done' ? 'tick' : progress.find(item => item.step === key)?.status === 'failed' ? 'close' : 'refresh'" /></span><div><h2>{{ progressNames[key] }}</h2><p class="setup-help">{{ progress.find(item => item.step === key)?.reason ?? (progress.find(item => item.step === key)?.status === 'done' ? key === 'folders' ? '知识文件、配置与日志目录已准备好' : key === 'storage' ? '基线版本 1 · 存储已就绪' : '本地服务已就绪' : key === 'service' ? '正在等待本地服务与索引就绪…' : '等待中') }}</p></div></div>
               <div v-if="failed" class="setup-notice error"><div>已完成的步骤会保留。可打开日志查看原因后重试。<div class="setup-actions"><button class="setup-button" :disabled="busy" @click="retryPreparation">重试</button><button class="setup-link" @click="perform(async () => { await bridge!.openLogs(); })">打开日志</button></div></div></div>
             </div>
             <template v-else-if="directory && checkedCurrent">
               <div v-if="!(dataMode === 'existing' && inspection?.kind === 'PRODUCT') && !modeMismatch" class="setup-directory-result"><span class="setup-status" :class="directoryTone">{{ directoryText }}</span>
-                <details v-if="!committed" :open="['PRODUCT_UPGRADABLE', 'OTHER_NON_EMPTY', 'NOT_WRITABLE', 'PRODUCT_UNSUPPORTED'].includes(inspection?.kind ?? '') || syncRisk"><summary>查看说明</summary><p class="setup-help">
+                <details v-if="!committed" :open="['OTHER_NON_EMPTY', 'NOT_WRITABLE', 'PRODUCT_UNSUPPORTED'].includes(inspection?.kind ?? '') || syncRisk"><summary>查看说明</summary><p class="setup-help">
                   <template v-if="syncRisk">同步冲突可能影响正在使用的数据库，请优先选择本地文件夹。</template>
-                  <template v-else-if="inspection?.kind === 'PRODUCT_UPGRADABLE'">升级前将备份主数据库与候选协调库。</template>
                   <template v-else-if="inspection?.kind === 'PRODUCT_INCOMPLETE'">已创建的目录与内容将保留，只继续缺失的初始化步骤。</template>
                   <template v-else-if="inspection?.kind === 'OTHER_NON_EMPTY'">不会在这里直接创建或覆盖文件。新知识库将位于 <code>{{ directory.dataDirectory }}</code>。</template>
                   <template v-else-if="inspection && 'reason' in inspection">{{ inspection.reason }}</template>
@@ -317,7 +307,6 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeIntegration?.(); });
               </div>
               <div v-if="committed" class="setup-notice"><UiIcon name="info" />如需更换，请在完成后于设置中迁移。</div>
               <label v-if="syncRisk && !committed" class="setup-check"><input v-model="syncRiskConfirmed" type="checkbox" />我了解风险，仍然使用</label>
-              <div v-if="inspection?.kind === 'PRODUCT_UPGRADABLE'" class="setup-backup"><UiIcon name="database" /><div>升级前的备份位置<code>{{ directory.backupRoot }}/&lt;时间戳&gt;/storage/</code></div></div>
               <p v-if="directory.portReason" class="setup-notice error">{{ directory.portReason }}</p>
             </template>
             <p v-else-if="!committed && !preparing && busy" class="setup-help" role="status">正在检查所选位置…</p>
@@ -356,11 +345,6 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeIntegration?.(); });
       <header><h2 id="reset-config-title">备份损坏的配置并重新设置</h2></header>
       <div class="setup-dialog-body"><p id="reset-config-description">将把当前 app-config.json 移动到备份目录，并从第 1 步重新设置。端口等应用设置将恢复默认，知识数据不受影响。</p><p class="setup-help">备份保存在 userData/backups/&lt;时间戳&gt;/app-config.json，不会覆盖已有备份。重新设置时可以选择原有知识库目录继续使用。</p></div>
       <footer><button class="setup-button" autofocus @click="resetConfigDialog?.close()">取消</button><button class="setup-button primary" :disabled="busy" @click="resetInvalidConfig">确认备份并重新设置</button></footer>
-    </dialog>
-    <dialog ref="upgradeDialog" class="setup-dialog" aria-labelledby="upgrade-title" aria-describedby="upgrade-description">
-      <header><h2 id="upgrade-title">备份并升级存储</h2><p id="upgrade-description" class="setup-help">已有知识与候选将保留。</p></header>
-      <div class="setup-dialog-body"><p>将先停止本地服务，确认没有其他写入者，再备份并升级此知识库。</p><code>{{ directory?.dataDirectory }}</code><ol><li>备份主数据库与候选协调库</li><li>将存储版本 5 升级到版本 6</li><li>启动服务并检查结果</li></ol><div class="setup-backup"><UiIcon name="database" /><code>{{ directory?.backupRoot }}/&lt;时间戳&gt;/storage/</code></div><label class="setup-check"><input v-model="writersStopped" type="checkbox" />我已停止其他使用此知识库的程序及写入者</label></div>
-      <footer><button class="setup-button" autofocus @click="upgradeDialog?.close()">取消</button><button class="setup-button primary" :disabled="!writersStopped || busy" @click="prepare(true)">确认备份并升级</button></footer>
     </dialog>
   </div>
 </template>

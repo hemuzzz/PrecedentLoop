@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { dataPaths, inspectNode, verifyBundledNode } from "../src/config.js";
-import { DataDirectoryError, ensureMarker, initializeDataDirectory, inspectDataDirectory, readStorageVersion, upgradeDataDirectory } from "../src/data-directory.js";
+import { DataDirectoryError, ensureMarker, initializeDataDirectory, inspectDataDirectory, readStorageVersion } from "../src/data-directory.js";
 import { fixtureExecutor } from "./executor-fixture.js";
 
 function header(version: number): Buffer {
@@ -13,7 +13,7 @@ function header(version: number): Buffer {
   bytes.write("SQLite format 3\0"); bytes.writeUInt32BE(version, 60);
   return bytes;
 }
-async function product(path: string, version = 6): Promise<void> {
+async function product(path: string, version = 1): Promise<void> {
   await mkdir(join(path, "repository/assets"), { recursive: true });
   await mkdir(join(path, "runtime"), { recursive: true });
   await writeFile(dataPaths(path).databasePath, header(version));
@@ -31,9 +31,9 @@ async function fakeRuntime(root: string, fail = ""): Promise<string> {
       if (!path.isAbsolute(process.env['PRECEDENT_LOOP_' + key])) throw Error('nonabsolute environment');
     }
     fs.appendFileSync('commands.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');
-    if (command === ${JSON.stringify(fail)}) { console.error('fixture migration failed'); process.exit(3); }
+    if (command === ${JSON.stringify(fail)}) { console.error('fixture initialization failed'); process.exit(3); }
     const header = Buffer.alloc(100); header.write('SQLite format 3\\0');
-    header.writeUInt32BE(command === 'migrate-knowledge' ? 5 : 6, 60);
+    header.writeUInt32BE(1, 60);
     fs.writeFileSync(process.env.PRECEDENT_LOOP_DATABASE_PATH, header);
   `);
   return runtime;
@@ -51,16 +51,16 @@ test("directory inspection is read-only and classifies missing, empty, unrelated
     await writeFile(join(path, "mine.txt"), "preserve");
     assert.deepEqual(await inspectDataDirectory(path), { kind: "OTHER_NON_EMPTY" });
     await product(path);
-    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 6 });
+    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 1 });
     assert.equal(await readFile(join(path, "mine.txt"), "utf8"), "preserve");
     await assert.rejects(readFile(join(path, ".precedentloop.json")), { code: "ENOENT" });
     for (const version of [0, 1, 4, 5, 6, 7, 256, 0xffffffff]) {
       await writeFile(dataPaths(path).databasePath, header(version));
       const inspection = await inspectDataDirectory(path);
-      assert.equal(inspection.kind, version === 5 ? "PRODUCT_UPGRADABLE" : version === 6 ? "PRODUCT" : "PRODUCT_UNSUPPORTED");
+      assert.equal(inspection.kind, version === 1 ? "PRODUCT" : "PRODUCT_UNSUPPORTED");
       assert.ok("storageVersion" in inspection && inspection.storageVersion === version);
     }
-    for (const bytes of [Buffer.alloc(100), header(6).subarray(0, 63), Buffer.from("SQLite format 2\0"), Buffer.alloc(0)]) {
+    for (const bytes of [Buffer.alloc(100), header(1).subarray(0, 63), Buffer.from("SQLite format 2\0"), Buffer.alloc(0)]) {
       await writeFile(dataPaths(path).databasePath, bytes);
       assert.equal(await readStorageVersion(dataPaths(path).databasePath), undefined);
       assert.equal((await inspectDataDirectory(path)).kind, "PRODUCT_UNSUPPORTED");
@@ -112,7 +112,7 @@ test("inspection reports access failure and cloud paths including a symlink with
       const cloud = join(root, "Library", name);
       assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "MISSING" } });
       await product(cloud);
-      assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 6 } });
+      assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 1 } });
       assert.equal((await inspectDataDirectory(`${cloud}-unrelated`, root)).kind, "MISSING");
     }
     await symlink(join(root, "Library/CloudStorage"), join(root, "alias"));
@@ -120,7 +120,7 @@ test("inspection reports access failure and cloud paths including a symlink with
   } finally { await chmod(locked, 0o700); await rm(root, { recursive: true, force: true }); }
 });
 
-test("initialization uses bundled migrations in order and produces the fixed layout for empty or missing directories", async () => {
+test("initialization uses bundled baseline initialization and produces the fixed layout for empty or missing directories", async () => {
   const root = await mkdtemp(join(tmpdir(), "desktop-init-"));
   try {
     const runtime = await fakeRuntime(root);
@@ -128,14 +128,14 @@ test("initialization uses bundled migrations in order and produces the fixed lay
       const path = join(root, empty ? "empty data" : "missing data");
       if (empty) await mkdir(path);
       await initializeDataDirectory(path, runtime);
-      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 6 });
+      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 1 });
       assert.deepEqual(JSON.parse(await readFile(dataPaths(path).workspaceConfigPath, "utf8")), { schemaVersion: 1, workspaces: [] });
       for (const branch of ["assets", "inbox"]) for (const type of ["memories", "documents", "skills"]) {
         assert.ok((await stat(join(path, "repository", branch, "global", type))).isDirectory());
       }
       assert.ok((await stat(join(path, "logs"))).isDirectory());
       assert.deepEqual((await readFile(join(path, "commands.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)),
-        [["migrate-knowledge", "--offline", "--initialize"], ["migrate-candidates", "--offline"]]);
+        [["init-database", "--offline"]]);
       await assert.rejects(initializeDataDirectory(path, runtime), /仅允许/);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -144,46 +144,17 @@ test("initialization uses bundled migrations in order and produces the fixed lay
 test("initialization reports the failed step, retains partial results, and never writes into an unrelated directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "desktop-init-failure-"));
   try {
-    const runtime = await fakeRuntime(root, "migrate-candidates");
+    const runtime = await fakeRuntime(root, "init-database");
     const path = join(root, "data");
-    await assert.rejects(initializeDataDirectory(path, runtime), error => error instanceof DataDirectoryError && error.step === "migrate-candidates");
-    assert.equal(await readStorageVersion(dataPaths(path).databasePath), 5);
+    await assert.rejects(initializeDataDirectory(path, runtime), error => error instanceof DataDirectoryError && error.step === "init-database");
+    await assert.rejects(readStorageVersion(dataPaths(path).databasePath), { code: "ENOENT" });
+    assert.equal((await inspectDataDirectory(path)).kind, "PRODUCT_INCOMPLETE");
     assert.ok(await readFile(join(path, ".precedentloop.json")));
     assert.ok(await readFile(dataPaths(path).workspaceConfigPath));
     const other = join(root, "other"); await mkdir(other); await writeFile(join(other, "mine"), "do not change");
     await assert.rejects(initializeDataDirectory(other, runtime), /仅允许/);
     assert.deepEqual(await readdir(other), ["mine"]);
     assert.equal(await readFile(join(other, "mine"), "utf8"), "do not change");
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test("upgrade only accepts version 5 and backs up main, optional coordination and WAL before migration", async () => {
-  const root = await mkdtemp(join(tmpdir(), "desktop-upgrade-"));
-  try {
-    const runtime = await fakeRuntime(root);
-    for (const withCoordination of [true, false]) {
-      const path = join(root, String(withCoordination)); await product(path, 5);
-      const coordination = join(path, "repository/.candidate-coordination.sqlite");
-      if (withCoordination) { await writeFile(coordination, "coordination"); await writeFile(`${coordination}-wal`, "offline WAL"); }
-      const backup = await upgradeDataDirectory(path, join(root, `backups-${withCoordination}`), runtime);
-      assert.deepEqual(await readFile(join(backup, "precedent-loop.sqlite")), header(5));
-      if (withCoordination) {
-        assert.equal(await readFile(join(backup, ".candidate-coordination.sqlite"), "utf8"), "coordination");
-        assert.equal(await readFile(join(backup, ".candidate-coordination.sqlite-wal"), "utf8"), "offline WAL");
-        assert.equal(await readFile(coordination, "utf8"), "coordination");
-      }
-      assert.equal(await readStorageVersion(dataPaths(path).databasePath), 6);
-      assert.equal(await readFile(join(path, "commands.jsonl"), "utf8"), '["migrate-candidates","--offline"]\n');
-      await assert.rejects(upgradeDataDirectory(path, join(root, "backup"), runtime), /版本 5/);
-    }
-    const failed = join(root, "failed"); await product(failed, 5);
-    const blockedBackup = join(root, "blocked"); await writeFile(blockedBackup, "file");
-    await assert.rejects(upgradeDataDirectory(failed, blockedBackup, runtime), /备份存储失败/);
-    assert.equal(await readStorageVersion(dataPaths(failed).databasePath), 5);
-    await assert.rejects(readFile(join(failed, "commands.jsonl")), { code: "ENOENT" });
-    await assert.rejects(upgradeDataDirectory(failed, join(root, "retained-backup"), join(root, "missing-runtime")), /校验包内运行时失败/);
-    const [timestamp] = await readdir(join(root, "retained-backup"));
-    assert.deepEqual(await readFile(join(root, "retained-backup", timestamp!, "storage/precedent-loop.sqlite")), header(5));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -249,9 +220,6 @@ test("all data writes reject sync-risk paths until explicit confirmation, includ
     await rm(join(path, ".precedentloop.json"));
     await assert.rejects(ensureMarker(path, { home: root }), /确认同步盘风险/);
     await ensureMarker(path, { home: root, syncRiskConfirmed: true });
-    await writeFile(dataPaths(path).databasePath, header(5));
-    await assert.rejects(upgradeDataDirectory(path, join(root, "backups"), runtime, { home: root }), /确认同步盘风险/);
-    await upgradeDataDirectory(path, join(root, "backups"), runtime, { home: root, syncRiskConfirmed: true });
-    assert.equal(await readStorageVersion(dataPaths(path).databasePath), 6);
+    assert.equal(await readStorageVersion(dataPaths(path).databasePath), 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
