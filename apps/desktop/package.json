@@ -1,0 +1,27 @@
+{
+  "name": "@precedent-loop/desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "files": ["dist"],
+  "engines": { "node": "24.21.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "package:mac": "node dist/package-app.js",
+    "release:mac": "node dist/release.js",
+    "smoke:package": "node dist/verify-service.js",
+    "smoke:update:mac": "node test-support/online-update-macos.mjs",
+    "update:mac": "node dist/update-app.js"
+  },
+  "dependencies": { "zod": "4.5.4" },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@types/node": "22.20.0",
+    "electron": "44.4.3",
+    "tsx": "4.23.13",
+    "typescript": "6.0.3"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "@precedent-loop/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "engines": {
+    "node": "24.21.0"
+  },
+  "scripts": {
+    "asset:confirm": "node dist/asset/confirm-cli.js",
+    "candidate": "node dist/asset/candidate-cli.js",
+    "candidate:migrate": "node dist/maintenance-cli.js migrate-candidates",
+    "build": "tsc --project tsconfig.build.json && node scripts/copy-resources.mjs",
+    "dev": "tsx watch src/main.ts",
+    "hook:user-prompt-submit": "node dist/hook/user-prompt-submit.js",
+    "hook:capture": "node dist/hook/capture-cli.js",
+    "capture:assess": "node dist/hook/capture-cli.js --record",
+    "smoke:capture:build": "node test-support/capture-build-smoke.mjs",
+    "smoke:asset-confirm:build": "node test-support/asset-confirm-build-smoke.mjs",
+    "smoke:hub:build": "node test-support/hub-build-smoke.mjs",
+    "smoke:mcp:build": "node test-support/mcp-build-smoke.mjs",
+    "smoke:n13:e2e:build": "node test-support/n13-e2e-build-smoke.mjs",
+    "start": "node dist/main.js",
+    "smoke:rest:build": "node test-support/rest-build-smoke.mjs",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "rebuild-index": "node dist/maintenance-cli.js rebuild-index",
+    "smoke:codex:build": "node test-support/protocol-client-smoke.mjs",
+    "smoke:recall:build": "node test-support/recall-runtime-smoke.mjs",
+    "knowledge:migrate": "node dist/maintenance-cli.js migrate-knowledge",
+    "recall:migrate": "node dist/maintenance-cli.js migrate-recall",
+    "runtime:retire": "node dist/maintenance-cli.js retire-old-runtime",
+    "capability:revoke": "node dist/maintenance-cli.js revoke-capability",
+    "typecheck:source": "tsc --project tsconfig.source-check.json --noEmit"
+  },
+  "dependencies": {
+    "@precedent-loop/id-generator": "workspace:*",
+    "@hono/node-server": "2.1.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "better-sqlite3": "13.0.3",
+    "chokidar": "5.0.0",
+    "gray-matter": "4.0.3",
+    "hono": "4.13.5",
+    "markdown-it": "14.1.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/markdown-it": "14.1.2",
+    "@types/node": "22.20.0",
+    "tsx": "4.23.13",
+    "typescript": "6.0.3"
+  }
+}

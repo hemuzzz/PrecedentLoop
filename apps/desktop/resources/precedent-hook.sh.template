@@ -1,0 +1,46 @@
+#!/bin/sh
+# Render APP_PATH as the contents of a single-quoted shell string (escape apostrophes).
+app_path='{{APP_PATH}}'
+user_data="$HOME/Library/Application Support/PrecedentLoop"
+# Explicit test identities follow desktop resolveUserData; production ignores the override.
+if [ "$#" -eq 5 ] && [ "$3" = '--test-identity' ]; then
+  case "$4" in
+    PrecedentLoop-Test-*)
+      case "$4" in */*) ;; *)
+        case "$5" in
+          local.precedentloop.desktop.test.*)
+            user_data="$HOME/Library/Application Support/$4"
+            case "${PRECEDENT_LOOP_USER_DATA_DIR-}" in /*) user_data="$PRECEDENT_LOOP_USER_DATA_DIR" ;; esac
+            ;;
+        esac
+      ;; esac
+      ;;
+  esac
+fi
+log_path="$user_data/logs/hook.log"
+if ! (umask 077; mkdir -p "$user_data/logs" && : >> "$log_path") 2>/dev/null; then
+  log_path=/dev/null
+fi
+fail() {
+  (printf '%s HOOK_LAUNCH_UNAVAILABLE\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$log_path") 2>/dev/null
+  if [ "$2" = record ]; then
+    printf '%s\n' 'Precedent Loop: assessment not recorded.' >&2
+    exit 1
+  fi
+  exit 0
+}
+app_name=${app_path##*/}
+app_name=${app_name%.app}
+node_path="$app_path/Contents/Frameworks/$app_name Helper.app/Contents/MacOS/$app_name Helper"
+entry_path="$app_path/Contents/Resources/runtime/apps/server/dist/hook/precedent-hook.js"
+if [ ! -x "$node_path" ] || [ ! -f "$entry_path" ]; then
+  fail "$@"
+fi
+# Node environment injection must not pollute Hook stdout or load unrelated code.
+unset NODE_OPTIONS NODE_PATH ELECTRON_RUN_AS_NODE NODE_CHANNEL_FD NODE_CHANNEL_SERIALIZATION_MODE
+ELECTRON_RUN_AS_NODE=1
+export ELECTRON_RUN_AS_NODE
+if ("$node_path" "$entry_path" "$@" 2>>"$log_path") 2>/dev/null; then
+  exit 0
+fi
+fail "$@"

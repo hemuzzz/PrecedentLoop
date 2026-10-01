@@ -1,0 +1,29 @@
+{
+  "name": "@precedent-loop/hub",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.21.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "vue-tsc --project tsconfig.json --noEmit",
+    "typecheck:source": "vue-tsc --project tsconfig.source-check.json --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "5.2.9",
+    "markdown-it": "14.1.0",
+    "vue": "3.5.42"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "14.1.2",
+    "@types/node": "22.20.0",
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "6.0.3",
+    "vite": "8.2.2",
+    "vue-tsc": "3.3.11"
+  }
+}

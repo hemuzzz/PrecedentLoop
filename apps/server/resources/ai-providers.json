@@ -1,0 +1,6 @@
+{
+  "providers": [
+    { "id": "codex", "executable": "/opt/homebrew/bin/codex", "timeoutMs": 600000 },
+    { "id": "claude", "executable": "/opt/homebrew/bin/claude", "timeoutMs": 600000 }
+  ]
+}

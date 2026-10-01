@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+logs/
+*.tsbuildinfo
+.DS_Store
+.desktop-local.json
