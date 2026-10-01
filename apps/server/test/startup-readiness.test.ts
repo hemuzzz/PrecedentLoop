@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, unlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ for (const change of ["add", "delete", "workspace", "unavailable"] as const) {
     await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [join(directory, "alpha")] }] }));
     const source = (id: string) => `---\nid: ${id}\ntype: MEMORY\nscope: WORKSPACE\nworkspace: alpha\ntitle: startup\nsummary: startup\n---\nbody\n`;
     await writeFile(path, source("ast301"));
+    initializeDatabase(databasePath);
     let scans = 0;
     let readyBeforeReconciliation = false;
     const manager = await AssetIndexManager.create({ repositoryPath, databasePath, workspaceConfigPath, scanner: async (options) => {

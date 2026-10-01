@@ -36,7 +36,7 @@ onBeforeUnmount(() => controller?.abort());
           <button class="overview-stat" @click="navigate('usage')"><UiIcon class="stat-symbol" name="activity" /><span>读取 / 累计使用</span><strong>{{ data.facts.reads }} / {{ data.facts.used }}</strong></button>
         </section>
         <KnowledgeGraph :scopes="data.scopes" />
-        <div class="overview-caption"><span>统计来自成功持久的事实。</span><button v-if="data.diagnosticCount" class="quiet-button" @click="navigate('status')">{{ data.diagnosticCount }} 项诊断 · 查看系统状态</button></div>
+        <div class="overview-caption"><span>仅统计已成功记录的操作。</span><button v-if="data.diagnosticCount" class="quiet-button" @click="navigate('status')">{{ data.diagnosticCount }} 项诊断 · 查看系统状态</button></div>
       </template>
     </div>
   </main>

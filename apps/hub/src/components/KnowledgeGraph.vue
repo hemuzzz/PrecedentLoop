@@ -45,7 +45,9 @@ const graph = computed(() => {
       const open = count > 0 && (searching.value || (expanded.get(id) ?? (count === 1)));
       const limit = limits.get(id) ?? 8;
       const children = open ? items.slice(0, limit).map(item => node({
-        id: `${id}/${item.assetId}`, kind: "asset", label: item.title, icon: "document", tone: category.key,
+        id: `${id}/${item.assetId}`, kind: "asset", icon: "document", tone: category.key,
+        label: item.pending && item.candidateId ? `候选 #${item.candidateId} · ${item.title}`
+          : !item.pending && item.knowledgeNumber != null ? `#${item.knowledgeNumber} · ${item.title}` : item.title,
         assetId: item.assetId, pending: item.pending,
       })) : [];
       if (open && items.length > limit) children.push(node({ id: `${id}/more`, kind: "more", label: `再显示 ${Math.min(8, items.length - limit)} 条 · 剩余 ${items.length - limit}`, icon: "plus", tone: category.key }));

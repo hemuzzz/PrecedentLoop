@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
@@ -380,7 +381,7 @@ test("requires and performs a full rebuild for incompatible or inconsistent SQLi
 
   await mkdir(dirname(fixture.databasePath), { recursive: true });
   const incompatibleDatabase = new Database(fixture.databasePath);
-  incompatibleDatabase.exec("CREATE TABLE asset_catalog (asset_id TEXT PRIMARY KEY)");
+  incompatibleDatabase.exec("DROP TABLE asset_catalog; CREATE TABLE asset_catalog (asset_id TEXT PRIMARY KEY)");
   incompatibleDatabase.close();
 
   const manager = await AssetIndexManager.create(fixture);
@@ -530,6 +531,7 @@ async function createFixture(): Promise<Fixture> {
   const databasePath = join(rootPath, "data", "precedent-loop.sqlite");
   await mkdir(join(repositoryPath, "assets"), { recursive: true });
   await writeWorkspaceConfig(workspaceConfigPath, ["alpha"]);
+  initializeDatabase(databasePath);
   return { databasePath, repositoryPath, rootPath, workspaceConfigPath };
 }
 

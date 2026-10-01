@@ -7,7 +7,7 @@ import test from "node:test";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore, serveKnowledge, toolData, toolPayload, persistentRows } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase, serveKnowledge, toolData, toolPayload, persistentRows } from "../test-support/knowledge-fixture.js";
 import type { RecallResult } from "../src/knowledge/model.js";
 
 // The same filesystem/HTTP assertions also exercise compiled production modules.
@@ -215,7 +215,7 @@ async function createFixture() {
   await writeFile(join(repositoryPath, validAssetPath), `---\nid: ${validId}\ntype: DOCUMENT\nscope: WORKSPACE\nworkspace: alpha\ntitle: valid\nsummary: valid\n---\nVALID_SIBLING\n`);
   await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [join(rootPath, "workspace-alpha")] }] }));
   const options = { repositoryPath, workspaceConfigPath, databasePath };
-  migrateKnowledge(databasePath, false, true); migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
   const index = await assets.AssetIndexManager.create(options);
   await index.synchronize();
   const runtime = knowledgeRuntime(options, () => index.status());

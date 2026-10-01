@@ -28,8 +28,7 @@ try {
     assert.ok((await readFile(join(build, "resources", file), "utf8")).length > 0, file);
   }
   assert.doesNotMatch(await readFile(join(build, "resources/knowledge-import/SKILL.md"), "utf8"), /knowledge-capture|KNOWLEDGE/u);
-  await cli("maintenance-cli.js", ["migrate-knowledge", "--offline", "--initialize"]);
-  await cli("maintenance-cli.js", ["migrate-candidates", "--offline"]);
+  await cli("maintenance-cli.js", ["init-database", "--offline"]);
   const mockCli = join(root, "mock-codex.mjs");
   await writeFile(mockCli, `#!${process.execPath}\nimport fs from 'node:fs';
     const a=process.argv.slice(2);

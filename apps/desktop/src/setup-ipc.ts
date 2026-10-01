@@ -14,7 +14,7 @@ export const setupRequestSchemas = {
   selectDirectory: empty,
   selectExecutable: z.object({ agent: agentNameSchema }).strict(),
   checkDirectory: z.object({ path: setupPathSchema }).strict(),
-  prepareDirectory: z.object({ path: setupPathSchema, syncRiskConfirmed: z.boolean(), upgradeConfirmed: z.boolean(), writersStopped: z.boolean() }).strict(),
+  prepareDirectory: z.object({ path: setupPathSchema, syncRiskConfirmed: z.boolean() }).strict(),
   detectAgents: z.object({ agent: agentNameSchema.optional() }).strict(), checkCore: empty, complete: empty, recheck: empty, selectRecoveryDirectory: empty, resetInvalidConfig: empty, openLogs: empty, quit: empty,
   getSettings: empty, saveAgentPath: z.object({ agent: agentNameSchema, path: setupPathSchema.nullable() }).strict(), getAppInfo: empty, checkForUpdates: empty,
   getIntegrationStatus: integrationStatusSchema, planIntegrations: integrationPlanSchema, applyIntegrations: planIdSchema,

@@ -165,7 +165,7 @@ test("eight simultaneous MCP clients never share capabilities or delivered fact 
         assert.deepEqual(read.authorizedWorkspaces, [i % 2 ? "beta" : "alpha"]);
         assert.deepEqual(f.repository.readFact(read.readRef!)!.authorizedWorkspaces, read.authorizedWorkspaces);
       }
-      assert.deepEqual(f.projection.recall(recall.recallId!)!.operation.authorizedWorkspaces, recall.authorizedWorkspaces);
+      assert.deepEqual((await f.projection.recall(recall.recallId!))!.operation.authorizedWorkspaces, recall.authorizedWorkspaces);
       return recall;
     }));
     assert.equal(new Set(results.map(result => result.recallId)).size, 8);

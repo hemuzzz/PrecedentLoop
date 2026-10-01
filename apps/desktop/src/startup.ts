@@ -18,7 +18,6 @@ export function determineStartupMode(config: AppConfigResult, checked?: DataDire
     case "NOT_WRITABLE": return recovery("DATA_INACCESSIBLE", inspection.reason);
     case "EMPTY":
     case "OTHER_NON_EMPTY": return recovery("DATA_NOT_PRODUCT", "所选目录不是本产品数据目录。");
-    case "PRODUCT_UPGRADABLE": return recovery("STORAGE_UPGRADE_REQUIRED", "存储版本 5 需要备份并升级后才能使用。");
     case "PRODUCT_INCOMPLETE": return recovery("STORAGE_INCOMPLETE", "数据目录初始化尚未完成。");
     case "PRODUCT_UNSUPPORTED": return recovery("STORAGE_UNSUPPORTED", inspection.reason);
     default: return recovery("DATA_UNCHECKED", "数据目录尚未完成检查。");

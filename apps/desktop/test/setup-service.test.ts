@@ -21,7 +21,7 @@ async function fixture(root: string, overrides: Partial<SetupDependencies> = {})
   await service.initialize();
   return { service, progress };
 }
-function request(path: string): PrepareRequest { return { path, syncRiskConfirmed: false, upgradeConfirmed: false, writersStopped: false }; }
+function request(path: string): PrepareRequest { return { path, syncRiskConfirmed: false }; }
 
 test("ports advance only through 18888–18898 and exhaustion is explicit", async () => {
   const calls: number[] = [];
@@ -81,24 +81,6 @@ test("existing knowledge is inspected without writes, counts markdown only, and 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("upgrade requires confirmations, stops the owned service and makes an offline backup", async () => {
-  const root = await mkdtemp(join(tmpdir(), "setup-upgrade-"));
-  try {
-    let stopped = 0;
-    const { service } = await fixture(root, { stopBackend: async () => { stopped++; } });
-    const path = join(root, "data"); await fixtureProduct(path, 5);
-    const before = await readFile(dataPaths(path).databasePath);
-    await assert.rejects(service.prepareDirectory(request(path)), /升级前/);
-    await assert.rejects(service.prepareDirectory({ ...request(path), upgradeConfirmed: true }), /写入者/);
-    assert.equal(stopped, 0);
-    await service.prepareDirectory({ ...request(path), upgradeConfirmed: true, writersStopped: true });
-    assert.ok(stopped >= 1);
-    const [timestamp] = await readdir(join(root, "userData/backups"));
-    assert.deepEqual(await readFile(join(root, "userData/backups", timestamp!, "storage/precedent-loop.sqlite")), before);
-    assert.equal(await readFile(join(path, "commands.jsonl"), "utf8"), '["migrate-candidates","--offline"]\n');
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
 test("preparation requires synchronization risk consent and rechecks classification on submit", async () => {
   const root = await mkdtemp(join(tmpdir(), "setup-sync-"));
   try {
@@ -144,7 +126,7 @@ test("interrupted storage retries resume missing migration and retain completed 
     const { service, progress } = await fixture(root);
     const path = join(root, "data"); await fixtureProduct(path, 0, true);
     await writeFile(join(path, "fail-migration"), "fail");
-    await assert.rejects(service.prepareDirectory(request(path)), /migrate-knowledge/);
+    await assert.rejects(service.prepareDirectory(request(path)), /init-database/);
     const marker = await readFile(join(path, ".precedentloop.json"));
     await rm(join(path, "fail-migration"));
     await service.prepareDirectory(request(path));
@@ -221,7 +203,7 @@ test("runtime, storage and MCP failures independently block completion, while Ag
     mcpReady = true;
     await fixtureProduct(path, 7);
     await assert.rejects(service.complete(), /核心检查未通过/);
-    await fixtureProduct(path, 6);
+    await fixtureProduct(path, 1);
     await service.detectAgents(); // Neither Agent is installed in this isolated fixture.
     await service.complete();
     assert.equal(service.startup.mode, "NORMAL");

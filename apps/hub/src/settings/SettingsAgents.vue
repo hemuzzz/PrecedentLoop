@@ -34,6 +34,8 @@ function row(agent: AgentName, item: IntegrationItemStatus): Row {
   return { label: "正常", tone: "ok", action: null, evidence };
 }
 function summary(agent: AgentName): { text: string; tag: string; tone: string } {
+  if (!loaded.value) return { text: "读取中", tag: "读取中", tone: "neutral" };
+  if (!settings.value || !status(agent)) return { text: "接入状态读取失败", tag: "未知", tone: "neutral" };
   const found = detection(agent)?.found;
   if (!connected(agent)) return found === false ? { text: "未在本机找到", tag: "未接入", tone: "neutral" } : { text: "尚未接入", tag: "未接入", tone: "neutral" };
   const rows = (status(agent)?.items ?? []).map(item => row(agent, item));

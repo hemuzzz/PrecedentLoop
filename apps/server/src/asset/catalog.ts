@@ -1,33 +1,7 @@
-import Database from "better-sqlite3";
-
+import type Database from "better-sqlite3";
+import { CREATE_CATALOG_SQL, CREATE_FTS_SQL, openDatabase } from "../storage/schema.js";
+import { assignKnowledgeNumbers } from "./knowledge-number.js";
 import type { AssetDiagnostic, ScannedAsset } from "./scanner.js";
-
-const CREATE_CATALOG_SQL = `
-  CREATE TABLE asset_catalog (
-    asset_id        TEXT PRIMARY KEY,
-    asset_type      TEXT NOT NULL,
-    asset_scope     TEXT NOT NULL,
-    workspace       TEXT,
-    title           TEXT NOT NULL,
-    summary         TEXT NOT NULL,
-    file_path       TEXT NOT NULL UNIQUE,
-    content_hash    TEXT NOT NULL,
-    file_size       INTEGER NOT NULL,
-    modified_at     TEXT NOT NULL,
-    indexed_at      TEXT NOT NULL
-  )
-`;
-
-const CREATE_FTS_SQL = `
-  CREATE VIRTUAL TABLE asset_fts USING fts5(
-    title,
-    summary,
-    body,
-    content = '',
-    contentless_delete = 1,
-    tokenize = 'trigram'
-  )
-`;
 
 interface CatalogRow {
   assetId: string;
@@ -94,7 +68,7 @@ export class AssetCatalog {
   #rebuildReason: string | null = null;
 
   constructor(databasePath: string, options: { maintenance?: boolean } = {}) {
-    this.#database = new Database(databasePath, options.maintenance ? { fileMustExist: true, timeout: 100 } : {});
+    this.#database = openDatabase(databasePath, options.maintenance ? { timeout: 100 } : {});
     // Offline repair must reach broken derived schemas, without initializing or
     // changing any schema before rebuild's transaction starts.
     if (!options.maintenance) this.#initializeSchema();
@@ -121,6 +95,7 @@ export class AssetCatalog {
 
       this.#deleteRows(rowsToDelete);
       this.#insertAssets([...difference.changed, ...difference.added], indexedAt);
+      assignKnowledgeNumbers(this.#database, assets.map(asset => asset.frontmatter.id));
 
       return {
         added: difference.added.length,
@@ -131,7 +106,7 @@ export class AssetCatalog {
       };
     });
 
-    const result = apply();
+    const result = apply.immediate();
     this.#assertConsistent();
     return result;
   }
@@ -141,6 +116,7 @@ export class AssetCatalog {
       this.#dropSchema();
       this.#createSchema();
       this.#insertAssets(assets, indexedAt);
+      assignKnowledgeNumbers(this.#database, assets.map(asset => asset.frontmatter.id));
     });
 
     rebuild.exclusive();

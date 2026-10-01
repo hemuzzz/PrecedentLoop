@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ import {
   HOOK_WORKSPACE_CONFIG_PATH_ENV,
   createUserPromptSubmitHookConfiguration,
 } from "../src/hook/user-prompt-submit.js";
-import { KnowledgeRepository, migrateKnowledge } from "../src/knowledge/repository.js";
+import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { WorkspaceCapabilityService } from "../src/workspace/capability.js";
 import { LOG_PATH_ENV } from "../src/logging.js";
 
@@ -259,7 +260,7 @@ async function createFixture(options: { initializeDatabase?: boolean } = {}): Pr
   const databasePath = join(rootPath, "data", "precedent-loop.sqlite");
   if (options.initializeDatabase !== false) {
     await mkdir(join(rootPath, "data"), { recursive: true });
-    migrateKnowledge(databasePath, false, true);
+    initializeDatabase(databasePath);
   }
   return {
     rootPath,

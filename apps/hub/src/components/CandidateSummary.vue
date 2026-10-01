@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import MarkdownIt from "markdown-it";
+import markdownItCjkFriendly from "markdown-it-cjk-friendly";
 import type { InboxItem } from "../api/types.js";
 import UiIcon from "./UiIcon.vue";
 import { markdownPresentation } from "../markdown-presentation.js";
@@ -10,7 +11,7 @@ const props = defineProps<{ item: InboxItem }>();
 // Preview the actual body without the YAML header; the original remains available in full.
 const body = computed(() => props.item.rawMarkdown
   .replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/, "").trim());
-const renderer = new MarkdownIt({ html: false, linkify: false, typographer: false });
+const renderer = new MarkdownIt({ html: false, linkify: false, typographer: false }).use(markdownItCjkFriendly);
 renderer.renderer.rules.fence = (tokens, index) => {
   const token = tokens[index]!;
   const language = renderer.utils.escapeHtml(token.info.trim().split(/\s+/u)[0] || "代码");

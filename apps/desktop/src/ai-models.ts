@@ -61,7 +61,7 @@ export async function claudeModelCatalog(claudeDirectory: string, executable: st
     return typeof value === "string" && pattern.test(value) ? value : null;
   };
   const current = { model: field("model", /^[\w.[\]-]{1,256}$/u), effort: field("effortLevel", levelPattern) };
-  const models = parsed.models.map(id => ({ id, label: id[0]!.toUpperCase() + id.slice(1), efforts: parsed.efforts, defaultEffort: null }));
+  const models = parsed.models.map(id => ({ id, label: `${id[0]!.toUpperCase() + id.slice(1)}（最新版本，由 Claude Code 决定）`, efforts: parsed.efforts, defaultEffort: null }));
   return { models: withCurrent(models, current.model, parsed.efforts), efforts: parsed.efforts, current };
 }
 export async function readAiModelCatalogs(sources: AiModelSources): Promise<AiModelCatalogs> {

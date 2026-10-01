@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { realpath } from "node:fs/promises";
 import Database from "better-sqlite3";
+import { openDatabase } from "../storage/schema.js";
 import { z } from "zod";
 import { CandidateRepository } from "./candidate-repository.js";
 import { AssetConfirmationError, ensureSafeTargetParent, targetPathForInboxPath } from "./confirmation.js";
@@ -31,7 +32,7 @@ export async function runFileTransaction<T>(options: FileTransactionOptions,
 ): Promise<T> {
   await configureRepositoryCoordination(options.repositoryPath, options.databasePath);
   return withRepositoryAccess(options.repositoryPath, async () => {
-    const database = new Database(options.databasePath, { fileMustExist: true, timeout: 0 });
+    const database = openDatabase(options.databasePath, { timeout: 0 });
     let journal: Journal | undefined;
     let committed = false;
     let result: T;
@@ -108,7 +109,7 @@ export async function recoverFileTransaction(repositoryPath: string, databasePat
   try { journal = journalSchema.parse(JSON.parse(bytes.toString("utf8"))); }
   catch { throw new RepositoryOperationError("RECOVERY_REQUIRED", "提交恢复材料损坏，已保留原文件"); }
   if (journal.databasePath !== await realpath(databasePath)) throw new RepositoryOperationError("DATABASE_MISMATCH", "提交恢复数据库不匹配");
-  const database = new Database(databasePath, { fileMustExist: true, timeout: 0 });
+  const database = openDatabase(databasePath, { timeout: 0 });
   let committed: boolean;
   try { committed = database.prepare("SELECT 1 FROM inbox_operation WHERE write_id=?").get(journal.writeId) !== undefined; }
   finally { database.close(); }

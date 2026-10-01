@@ -8,8 +8,7 @@ import { appConfigSchema, backendEnvironment, dataPaths, executeFile, runtimeCon
 
 export type DirectoryInspection =
   | { kind: "MISSING" | "EMPTY" | "OTHER_NON_EMPTY" }
-  | { kind: "PRODUCT"; storageVersion: 6 }
-  | { kind: "PRODUCT_UPGRADABLE"; storageVersion: 5 }
+  | { kind: "PRODUCT"; storageVersion: 1 }
   | { kind: "PRODUCT_INCOMPLETE"; storageVersion?: 0 }
   | { kind: "PRODUCT_UNSUPPORTED"; storageVersion?: number; reason: string }
   | { kind: "NOT_WRITABLE"; reason: string };
@@ -89,8 +88,7 @@ async function inspectContents(path: string): Promise<DirectoryInspection> {
     await checkAccess(paths.databasePath, false);
     if (!(await stat(paths.databasePath)).isFile()) return { kind: "PRODUCT_UNSUPPORTED", reason: "主数据库不是普通文件" };
     const version = await readStorageVersion(paths.databasePath);
-    if (version === 6) return { kind: "PRODUCT", storageVersion: 6 };
-    if (version === 5) return { kind: "PRODUCT_UPGRADABLE", storageVersion: 5 };
+    if (version === 1) return { kind: "PRODUCT", storageVersion: 1 };
     return { kind: "PRODUCT_UNSUPPORTED", ...(version === undefined ? {} : { storageVersion: version }),
       reason: version === undefined ? "SQLite 文件头无效" : `不支持存储版本 ${version}` };
   } catch (error) { return { kind: "NOT_WRITABLE", reason: `无法读取或写入数据目录：${message(error)}` }; }
@@ -127,25 +125,23 @@ async function inspectForWrite(path: string, options: DirectoryWriteOptions): Pr
 }
 export async function ensureMarker(path: string, options: DirectoryWriteOptions = {}): Promise<void> {
   const inspection = await inspectForWrite(path, options);
-  if (inspection.kind !== "PRODUCT" && inspection.kind !== "PRODUCT_UPGRADABLE") throw new DataDirectoryError("补写标记", "不是可用的本产品数据目录");
+  if (inspection.kind !== "PRODUCT") throw new DataDirectoryError("补写标记", "不是可用的本产品数据目录");
   if (!await exists(join(path, markerName))) await writeMarker(path);
 }
 
-async function migrate(path: string, runtime: string, initialize: boolean): Promise<void> {
+async function initializeWithRuntime(path: string, runtime: string): Promise<void> {
   let step = "校验包内运行时";
   try {
     const node = await verifyBundledNode(runtime);
     const config = runtimeConfig(appConfigSchema.parse({ configVersion: 1, setupVersion: 1, setupCompleted: false, dataDirectory: path }));
-    const commands = initialize ? [["migrate-knowledge", "--offline", "--initialize"], ["migrate-candidates", "--offline"]] : [["migrate-candidates", "--offline"]];
-    for (const args of commands) {
-      step = args[0]!;
-      // The CLI compares argv[1] with import.meta.url; macOS /var aliases must be canonical.
-      await executeFile(node, [await realpath(join(runtime, "apps/server/dist/maintenance-cli.js")), ...args], {
-        cwd: path, env: backendEnvironment(config), timeout: 120000, maxBuffer: 1024 * 1024,
-      });
-    }
+    const args = ["init-database", "--offline"];
+    step = "init-database";
+    // The CLI compares argv[1] with import.meta.url; macOS /var aliases must be canonical.
+    await executeFile(node, [await realpath(join(runtime, "apps/server/dist/maintenance-cli.js")), ...args], {
+      cwd: path, env: backendEnvironment(config), timeout: 120000, maxBuffer: 1024 * 1024,
+    });
     step = "核对存储版本";
-    if (await readStorageVersion(config.databasePath) !== 6) throw new Error("存储未到达版本 6");
+    if (await readStorageVersion(config.databasePath) !== 1) throw new Error("存储未到达基线版本 1");
   } catch (error) { throw new DataDirectoryError(step, error); }
 }
 
@@ -178,7 +174,7 @@ export async function prepareDirectoryLayout(path: string, options: DirectoryWri
 export async function initializeStorage(path: string, runtime: string, options: DirectoryWriteOptions = {}): Promise<void> {
   const inspection = await inspectForWrite(path, options);
   if (inspection.kind !== "PRODUCT_INCOMPLETE") throw new DataDirectoryError("初始化存储", "仅允许未完成初始化的目录");
-  await migrate(path, runtime, true);
+  await initializeWithRuntime(path, runtime);
 }
 export async function initializeDataDirectory(path: string, runtime: string, options: DirectoryWriteOptions = {}): Promise<void> {
   await prepareDirectoryLayout(path, options);
@@ -225,26 +221,4 @@ export async function rebindCoordination(path: string, runtime: string): Promise
       cwd: path, env: backendEnvironment(config), timeout: 120000, maxBuffer: 1024 * 1024,
     });
   } catch (error) { throw new DataDirectoryError("修正协调库绑定", error); }
-}
-
-/** Caller must stop the backend and all same-database writers before this offline operation. */
-export async function upgradeDataDirectory(path: string, backupRoot: string, runtime: string, options: DirectoryWriteOptions = {}): Promise<string> {
-  const inspection = await inspectForWrite(path, options);
-  if (inspection.kind !== "PRODUCT_UPGRADABLE") throw new DataDirectoryError("检查待升级数据", "仅允许存储版本 5");
-  if (!isAbsolute(backupRoot)) throw new DataDirectoryError("备份存储", "备份根目录必须是绝对路径");
-  const backup = join(backupRoot, new Date().toISOString().replace(/[:.]/gu, "-"), "storage");
-  try {
-    await mkdir(dirname(backup), { recursive: true });
-    await mkdir(backup); // A timestamp collision must not overwrite an earlier backup.
-    const paths = dataPaths(path);
-    for (const source of [paths.databasePath, join(paths.assetRepositoryPath, ".candidate-coordination.sqlite")]) {
-      if (source !== paths.databasePath && !await exists(source)) continue;
-      const filename = source === paths.databasePath ? "precedent-loop.sqlite" : ".candidate-coordination.sqlite";
-      await copyFile(source, join(backup, filename), constants.COPYFILE_EXCL);
-      // Offline WAL content can still exist after an interrupted writer; retain it with the database.
-      if (await exists(`${source}-wal`)) await copyFile(`${source}-wal`, join(backup, `${filename}-wal`), constants.COPYFILE_EXCL);
-    }
-  } catch (error) { throw new DataDirectoryError("备份存储", error); }
-  await migrate(path, runtime, false);
-  return backup;
 }

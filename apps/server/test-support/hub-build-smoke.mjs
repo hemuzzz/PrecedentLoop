@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../dist/storage/schema.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -6,8 +7,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { migrateCandidateStore } from "../dist/asset/candidate-repository.js";
-import { migrateKnowledge } from "../dist/knowledge/repository.js";
 
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = await mkdtemp(join(tmpdir(), "precedent-loop-n10-hub-build-"));
@@ -33,8 +32,8 @@ try {
   ].join("\n"));
   await mkdir(dirname(databasePath), { recursive: true });
   // Startup never migrates; mirror the explicit offline installation step.
-  migrateKnowledge(databasePath, false, true);
-  migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
+
 
   child = spawn(process.execPath, [join(serverRoot, "dist", "main.js")], {
     cwd: serverRoot,

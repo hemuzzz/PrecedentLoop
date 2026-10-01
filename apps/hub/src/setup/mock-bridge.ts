@@ -48,19 +48,18 @@ export function createMockBridge(scenario: string, options = new URLSearchParams
     selectDirectory: async () => "/Users/alex/PrecedentLoop",
     selectExecutable: async ({ agent }) => `/Users/alex/bin/${agent}`,
     checkDirectory: async ({ path }): Promise<DirectoryCheck> => {
-      const kind = prepared ? "PRODUCT" : scenario === "S1-b" || scenario === "R1-config-invalid" ? "PRODUCT" : scenario.startsWith("S1-c") ? "PRODUCT_UPGRADABLE"
+      const kind = prepared ? "PRODUCT" : scenario === "S1-b" || scenario === "R1-config-invalid" ? "PRODUCT" : scenario.startsWith("S1-c") ? "PRODUCT_UNSUPPORTED"
         : scenario === "S1-d" ? "OTHER_NON_EMPTY" : scenario === "S1-e" ? "NOT_WRITABLE" : scenario === "S1-i" ? "PRODUCT_UNSUPPORTED"
           : scenario === "S1-incomplete" ? "PRODUCT_INCOMPLETE" : "MISSING";
       const actual = kind === "OTHER_NON_EMPTY" ? `${path}/PrecedentLoop` : path;
-      const inspection: DirectoryInspection = kind === "PRODUCT" ? { kind, storageVersion: 6 }
-        : kind === "PRODUCT_UPGRADABLE" ? { kind, storageVersion: 5 }
-          : kind === "PRODUCT_UNSUPPORTED" ? { kind, storageVersion: 7, reason: "检测到存储版本 7，当前应用支持版本 6。请更新应用，或选择其他目录。不会覆盖已有数据。" }
+      const inspection: DirectoryInspection = kind === "PRODUCT" ? { kind, storageVersion: 1 }
+          : kind === "PRODUCT_UNSUPPORTED" ? { kind, storageVersion: 6, reason: "检测到存储版本 6，当前应用仅支持基线版本 1。请选择已准备好的数据目录。不会升级或覆盖已有数据。" }
             : kind === "NOT_WRITABLE" ? { kind, reason: "无法在此目录创建文件。请选择有写入权限的文件夹。" } : { kind };
       return { selectedPath: path, dataDirectory: actual, inspection: scenario === "S1-f" ? { kind: "SYNC_RISK", inspection } : inspection,
         paths: { assetRepositoryPath: `${actual}/repository`, databasePath: `${actual}/runtime/precedent-loop.sqlite`,
           workspaceConfigPath: `${actual}/config/workspaces.json`, logPath: `${actual}/logs/server.log`, desktopLogPath: `${actual}/logs/desktop.log` },
-        port: 18888, backupRoot: "/Users/alex/Library/Application Support/PrecedentLoop/backups",
-        ...(["PRODUCT", "PRODUCT_UPGRADABLE"].includes(kind) ? { statistics: { assets: 46, candidates: 5, workspaces: 2 } } : {}) };
+        port: 18888,
+        ...(kind === "PRODUCT" ? { statistics: { assets: 46, candidates: 5, workspaces: 2 } } : {}) };
     },
     prepareDirectory: async ({ path }) => {
       for (const item of ["folders", "storage", "service"] as const) {
@@ -85,7 +84,7 @@ export function createMockBridge(scenario: string, options = new URLSearchParams
     },
     checkCore: async (): Promise<CoreCheck[]> => (["directory", "storage", "runtime", "service", "mcp"] as const).map(id => ({ id,
       ok: !(scenario === "S4-c" && !retried && ["service", "mcp"].includes(id)),
-      detail: id === "directory" ? directory : id === "storage" ? "版本 6 · 候选存储已就绪" : id === "runtime" ? "内置 Node 22.16.0 · arm64"
+      detail: id === "directory" ? directory : id === "storage" ? "基线版本 1 · 存储已就绪" : id === "runtime" ? "内置 Node 22.16.0 · arm64"
         : id === "mcp" ? "http://127.0.0.1:18888/mcp" : scenario === "S4-c" && !retried ? "本地服务尚未就绪，请重试。" : "服务已启动 · 索引已就绪" })),
     complete: async () => { /* Development preview stays on the current screen. */ },
     recheck: async () => { retried = true; return getState(); },

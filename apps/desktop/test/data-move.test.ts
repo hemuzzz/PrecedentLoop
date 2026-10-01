@@ -11,7 +11,7 @@ import { fixtureProduct, fixtureRuntime } from "./setup-fixture.js";
 
 async function fixture(extra: Partial<SetupDependencies> = {}) {
   const f = await integrationFixture();
-  await fixtureProduct(f.config.dataDirectory, 6, true);
+  await fixtureProduct(f.config.dataDirectory, 1, true);
   await mkdir(join(f.config.dataDirectory, "repository/assets/global/memories"), { recursive: true });
   await writeFile(join(f.config.dataDirectory, "repository/assets/global/memories/a.md"), "# 正式知识\n");
   await mkdir(join(f.config.dataDirectory, "repository/inbox/global/memories"), { recursive: true });
@@ -80,7 +80,7 @@ test("migrate refuses overlapping or non-empty targets, and uses a PrecedentLoop
     }
     // The parent is non-empty, so the target becomes a sibling subfolder, never the parent itself.
     assert.equal((await f.service.planDataMove("migrate", f.root)).to, join(f.root, "PrecedentLoop"));
-    const other = join(f.root, "other-product"); await fixtureProduct(other, 6, true);
+    const other = join(f.root, "other-product"); await fixtureProduct(other, 1, true);
     assert.match((await f.service.planDataMove("migrate", other)).reason ?? "", /关联其他数据目录/);
     const unrelated = join(f.root, "Documents"); await mkdir(unrelated); await writeFile(join(unrelated, "notes.txt"), "mine");
     const plan = await f.service.planDataMove("migrate", unrelated);
@@ -105,13 +105,13 @@ test("a copy failure keeps the original directory in use and restarts the origin
   } finally { await f.cleanup(); }
 });
 
-test("associate switches to an existing storage-6 directory without copying; other kinds are refused", async () => {
+test("associate switches to an existing baseline-1 directory without copying; other kinds are refused", async () => {
   const f = await fixture();
   try {
-    const upgradable = join(f.root, "old"); await fixtureProduct(upgradable, 5, true);
-    assert.match((await f.service.planDataMove("associate", upgradable)).reason ?? "", /存储版本 5/);
-    assert.match((await f.service.planDataMove("associate", join(f.root, "empty"))).reason ?? "", /存储版本 6/);
-    const other = join(f.root, "other"); await fixtureProduct(other, 6, true);
+    const unsupported = join(f.root, "old"); await fixtureProduct(unsupported, 5, true);
+    assert.match((await f.service.planDataMove("associate", unsupported)).reason ?? "", /存储版本 5/);
+    assert.match((await f.service.planDataMove("associate", join(f.root, "empty"))).reason ?? "", /基线版本 1/);
+    const other = join(f.root, "other"); await fixtureProduct(other, 1, true);
     await mkdir(join(other, "repository/assets/global/memories"), { recursive: true });
     await writeFile(join(other, "repository/assets/global/memories/x.md"), "x"); await writeFile(join(other, "repository/assets/global/memories/y.md"), "y");
     const plan = await f.service.planDataMove("associate", other);

@@ -16,12 +16,12 @@ import type { StructuredErrorLogInput } from "../src/logging.js";
 // Reuse the same assertions when explicitly running against fresh build output.
 export const moduleRoot = new URL(process.env.PRECEDENT_LOOP_TEST_DIST === "1" ? "../dist/" : "../src/", import.meta.url);
 export const assets: typeof import("../src/asset/index.js") = await import(new URL("asset/index.js", moduleRoot).href);
-export const { KnowledgeRepository, migrateKnowledge }: typeof import("../src/knowledge/repository.js") = await import(new URL("knowledge/repository.js", moduleRoot).href);
+export const { KnowledgeRepository }: typeof import("../src/knowledge/repository.js") = await import(new URL("knowledge/repository.js", moduleRoot).href);
 export const { KnowledgeProjection }: typeof import("../src/knowledge/projection.js") = await import(new URL("knowledge/projection.js", moduleRoot).href);
 export const { KnowledgeService }: typeof import("../src/knowledge/service.js") = await import(new URL("knowledge/service.js", moduleRoot).href);
 export const { KnowledgeError }: typeof import("../src/knowledge/model.js") = await import(new URL("knowledge/model.js", moduleRoot).href);
 export const { WorkspaceCapabilityService }: typeof import("../src/workspace/capability.js") = await import(new URL("workspace/capability.js", moduleRoot).href);
-export const { migrateCandidateStore }: typeof import("../src/asset/candidate-repository.js") = await import(new URL("asset/candidate-repository.js", moduleRoot).href);
+export const { initializeDatabase }: typeof import("../src/storage/schema.js") = await import(new URL("storage/schema.js", moduleRoot).href);
 export const { AssetContentVersionRepository }: typeof import("../src/asset/content-version.js") = await import(new URL("asset/content-version.js", moduleRoot).href);
 const { AssetDiffService }: typeof import("../src/asset/content-diff.js") = await import(new URL("asset/content-diff.js", moduleRoot).href);
 const { createApp }: typeof import("../src/app.js") = await import(new URL("app.js", moduleRoot).href);
@@ -86,7 +86,7 @@ export async function knowledgeFixture() {
   const config = { schemaVersion: 1, workspaces: [{ name: "alpha", paths: [join(root, "alpha")] }, { name: "beta", paths: [join(root, "beta")] }] };
   await mkdir(join(options.repositoryPath, "assets"), { recursive: true });
   await writeFile(options.workspaceConfigPath, JSON.stringify(config));
-  migrateKnowledge(options.databasePath, false, true); migrateCandidateStore(options.databasePath);
+  initializeDatabase(options.databasePath);
   const index = await assets.AssetIndexManager.create(options); await index.synchronize();
   // No automatic refresh: qualification tests deliberately retain a stale Catalog.
   const runtime = knowledgeRuntime(options, () => index.status());

@@ -43,7 +43,6 @@ export interface DirectoryCheck {
   paths: { assetRepositoryPath: string; databasePath: string; workspaceConfigPath: string; logPath: string; desktopLogPath: string };
   port: number | null;
   portReason?: string;
-  backupRoot: string;
   statistics?: { assets?: number; candidates?: number; workspaces?: number };
 }
 export interface CoreCheck {
@@ -64,8 +63,6 @@ export interface SetupSnapshot {
 export interface PrepareRequest {
   path: string;
   syncRiskConfirmed: boolean;
-  upgradeConfirmed: boolean;
-  writersStopped: boolean;
 }
 export interface SetupCoreBridge {
   getState(): Promise<SetupSnapshot>;

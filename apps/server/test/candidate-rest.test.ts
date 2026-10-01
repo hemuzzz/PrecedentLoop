@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
@@ -6,11 +7,10 @@ import { AiService } from "../src/ai/service.js";
 import { AssetContentVersionRepository } from "../src/asset/content-version.js";
 import { AssetDiffService } from "../src/asset/content-diff.js";
 import { AssetIndexManager, AssetSearchService } from "../src/asset/index.js";
-import { KnowledgeRepository, migrateKnowledge, migrateRecallStorage } from "../src/knowledge/repository.js";
+import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { KnowledgeProjection } from "../src/knowledge/projection.js";
 import { WorkspaceCapabilityService } from "../src/workspace/capability.js";
 import { HubAssetApplicationService, OverviewApplicationService, SystemStatusApplicationService } from "../src/http/index.js";
-import { migrateCandidateStore } from "../src/asset/candidate-repository.js";
 import { runCandidateCli } from "../src/asset/candidate-cli.js";
 import { candidateFixture, content, selection } from "../test-support/candidate-fixture.js";
 import { PassThrough } from "node:stream";
@@ -37,7 +37,7 @@ async function fixture() {
   const get = (path: string, headers: Record<string, string> = {}) => app.request(`http://${authority}${path}`, { headers: { host: authority, ...headers } });
   const token = ((await (await get("/api/inbox/session")).json()) as { data: { token: string } }).data.token;
   const post = (path: string, body: object, headers: Record<string, string> = {}) => app.request(`http://${authority}${path}`, { method: "POST", headers: { host: authority, origin: `http://${authority}`, "content-type": "application/json", "x-hub-write-token": token, ...headers }, body: JSON.stringify(body) });
-  return { ...f, app, get, post, token, repository, cleanup: async () => { await ai.close(); search.close(); versions.close(); repository.close(); await index.close(); await f.cleanup(); } };
+  return { ...f, app, get, post, token, repository, index, cleanup: async () => { await ai.close(); search.close(); versions.close(); repository.close(); await index.close(); await f.cleanup(); } };
 }
 
 test("finite REST writes require same origin, current token, JSON and exact fields; GET never registers", async () => {
@@ -62,6 +62,48 @@ test("finite REST writes require same origin, current token, JSON and exact fiel
     const inbox = await (await f.get("/api/inbox")).json() as { data: { items: unknown[] } };
     assert.equal(inbox.data.items.length, 0);
     assert.deepEqual(f.repository.db.prepare("SELECT count(*) AS n FROM used_event").get(), { n: 0 });
+  } finally { await f.cleanup(); }
+});
+
+test("REST acceptance, revision, search and graph share query-layer formal numbers", async () => {
+  const f = await fixture();
+  try {
+    const pending = (await f.service.prepare("number-prepare", [content()])).candidates[0]!;
+    const inbox = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ candidateId: string; knowledgeNumber: number | null }> } };
+    assert.equal(inbox.data.items[0]?.candidateId, pending.candidateId);
+    assert.equal(inbox.data.items[0]?.knowledgeNumber, null);
+    const graphPending = await (await f.get("/api/overview")).json() as { data: { scopes: Array<{ items: Array<{ candidateId: string | null; knowledgeNumber: number | null }> }> } };
+    assert.equal(graphPending.data.scopes.flatMap(scope => scope.items)[0]?.candidateId, pending.candidateId);
+    assert.equal((await f.post("/api/inbox/accept", selection(pending, "number-accept"))).status, 200);
+    const before = await (await f.get(`/api/assets/${pending.assetId}`)).json() as { data: { asset: { knowledgeNumber: number | null; contentHash: string } } };
+    assert.equal(before.data.asset.knowledgeNumber, 1);
+    const status = await (await f.get("/api/system/status")).json() as { data: { diagnostics: Array<{ code: string }>; mcpEndpoint: { ready: boolean } } };
+    assert.ok(!status.data.diagnostics.some(item => item.code.includes("MIGRATION")));
+    assert.equal(f.repository.db.pragma("user_version", { simple: true }), 1);
+    for (const path of ["/api/assets", `/api/assets?query=${encodeURIComponent("候选知识")}`]) {
+      const response = await (await f.get(path)).json() as { data: { items: Array<{ knowledgeNumber: number | null }> } };
+      assert.equal(response.data.items[0]?.knowledgeNumber, 1);
+    }
+    const detail = await (await f.get(`/api/assets/${pending.assetId}`)).json() as { data: { asset: { knowledgeNumber: number; contentHash: string } } };
+    assert.equal(detail.data.asset.knowledgeNumber, 1);
+    assert.equal(detail.data.asset.contentHash, before.data.asset.contentHash);
+    const revision = (await f.service.prepare("number-revise", [{ ...content("修订正文"), existingAssetId: pending.assetId, baselineHash: detail.data.asset.contentHash }])).candidates[0]!;
+    const revisedInbox = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ candidateId: string; knowledgeNumber: number }> } };
+    assert.equal(revisedInbox.data.items[0]?.candidateId, revision.candidateId);
+    assert.equal(revisedInbox.data.items[0]?.knowledgeNumber, 1);
+    const graph = await (await f.get("/api/overview")).json() as { data: { scopes: Array<{ items: Array<{ pending: boolean; knowledgeNumber: number | null; candidateId?: string }> }> } };
+    const nodes = graph.data.scopes.flatMap(scope => scope.items);
+    assert.equal(nodes.find(item => !item.pending)?.knowledgeNumber, 1);
+    assert.equal(nodes.find(item => item.pending)?.candidateId, revision.candidateId);
+    assert.equal((await f.post("/api/inbox/accept", { ...selection(revision, "number-revision-accept"), baselineHash: detail.data.asset.contentHash })).status, 200);
+    const revised = await (await f.get(`/api/assets/${pending.assetId}`)).json() as { data: { asset: { knowledgeNumber: number } } };
+    assert.equal(revised.data.asset.knowledgeNumber, 1);
+    const next = (await f.service.prepare("number-next", [content("下一条")])).candidates[0]!;
+    assert.equal((await f.post("/api/inbox/accept", selection(next, "number-next-accept"))).status, 200);
+    const nextDetail = await (await f.get(`/api/assets/${next.assetId}`)).json() as { data: { asset: { knowledgeNumber: number } } };
+    assert.equal(nextDetail.data.asset.knowledgeNumber, 2);
+    const migratedStatus = await (await f.get("/api/system/status")).json() as { data: { diagnostics: Array<{ code: string }> } };
+    assert.ok(!migratedStatus.data.diagnostics.some(item => item.code === "KNOWLEDGE_NUMBER_MIGRATION_REQUIRED"));
   } finally { await f.cleanup(); }
 });
 
@@ -134,42 +176,16 @@ test("import accepts a body above the old HTTP limit without removing limits on 
   } finally { await f.cleanup(); }
 });
 
-test("explicit candidate migration and later index maintenance preserve persistent facts and candidate state", async () => {
+test("index maintenance preserves persistent facts and candidate state", async () => {
   const f = await fixture();
   try {
     const item = (await f.service.prepare("prepare", [content()])).candidates[0]!;
     await f.service.defer({ ...selection(item, "defer"), deferred: true });
     f.repository.db.prepare("INSERT INTO workspace_capability VALUES (?,?,?,?)").run("hash", "alpha", "now", "mapping");
     const before = f.repository.db.prepare("SELECT * FROM workspace_capability").all();
-    migrateCandidateStore(f.options.databasePath);
-    assert.equal(migrateKnowledge(f.options.databasePath), 6); migrateRecallStorage(f.options.databasePath);
+    await f.index.rebuild();
     assert.deepEqual(f.repository.db.prepare("SELECT * FROM workspace_capability").all(), before);
     assert.equal((await f.service.list("DEFERRED")).items[0]?.candidateId, item.candidateId);
     assert.ok(await f.service.operation("prepare"));
   } finally { await f.cleanup(); }
-});
-
-test("version 5 upgrade preserves all persistent rows and migration failure rolls back the complete schema change", async () => {
-  const root = await mkdtemp(join(tmpdir(), "candidate-migration-")); const path = join(root, "data.sqlite");
-  migrateKnowledge(path, false, true);
-  const db = new Database(path);
-  try {
-    db.exec(`INSERT INTO workspace_capability VALUES ('cap','alpha','now','mapping');
-      INSERT INTO recall_operation VALUES ('recall','[]','["exact phrase"]','now','[]','{}');
-      INSERT INTO recall_item VALUES ('item','recall','asset','hash','GLOBAL',NULL,'FULL','[]',0);
-      INSERT INTO read_operation VALUES ('read','[]','asset','hash','GLOBAL',NULL,'item','now');
-      INSERT INTO used_event VALUES ('used','[]','item',NULL,'asset','now');
-      INSERT INTO asset_content_version VALUES ('asset','CURRENT',X'4142','hash','now');`);
-    const tables = ["workspace_capability", "recall_operation", "recall_item", "read_operation", "used_event", "asset_content_version"];
-    const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
-    db.exec("CREATE TABLE inbox_operation (conflict TEXT)");
-    assert.throws(() => migrateCandidateStore(path));
-    assert.equal(db.pragma("user_version", { simple: true }), 5);
-    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name='inbox_candidate'").get(), undefined);
-    assert.deepEqual(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()), before);
-    db.exec("DROP TABLE inbox_operation"); migrateCandidateStore(path);
-    assert.equal(db.pragma("user_version", { simple: true }), 6);
-    assert.deepEqual(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()), before);
-    assert.equal(migrateRecallStorage(path), 6);
-  } finally { db.close(); await rm(root, { recursive: true, force: true }); }
 });

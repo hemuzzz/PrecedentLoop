@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore, persistentRows, serveKnowledge, toolData } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase, persistentRows, serveKnowledge, toolData } from "../test-support/knowledge-fixture.js";
 import type { RecallResult } from "../src/knowledge/model.js";
 
 const moduleRoot = new URL(process.env.PRECEDENT_LOOP_TEST_DIST === "1" ? "../dist/" : "../src/", import.meta.url);
@@ -192,7 +192,7 @@ async function createFixture(withFourth = false) {
   if (withFourth) await write("d", assetIds.d, "delta");
   // No watcher: both file operations finish before a normal complete scan/apply.
   let tick = 0;
-  migrateKnowledge(databasePath, false, true); migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
   const index = await assets.AssetIndexManager.create({ ...options, now: () => new Date(Date.UTC(2026, 8, 6, 0, 0, tick++)) });
   assert.notEqual(await index.synchronize(), null);
   const runtime = knowledgeRuntime(options, () => index.status());

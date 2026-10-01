@@ -19,7 +19,7 @@ import {
   formatDate,
   handleTabKeydown,
 } from "./view-helpers.js";
-import { navigate, useRoute } from "../navigation.js";
+import { navigate, navigateHash, useRoute } from "../navigation.js";
 import PageHeader from "../components/PageHeader.vue";
 import PreviewDialog from "../components/PreviewDialog.vue";
 import FilterMenu from "../components/FilterMenu.vue";
@@ -35,6 +35,11 @@ const activeView = computed(() =>
   route.value.page === "inbox" ? "INBOX" : "LIBRARY",
 );
 const searchMode = computed(() => route.value.page === "search");
+const recordSource = computed(() => {
+  const hash = new URLSearchParams(route.value.query).get("from");
+  if (!hash || !/^#\/(recalls|usage)(?:\/[^/?]+)?(?:\?.*)?$/u.test(hash)) return null;
+  return { hash, label: hash.startsWith("#/recalls") ? "返回召回记录" : "返回使用记录" };
+});
 const previewOpen = computed(
   () =>
     ["library", "search", "inbox"].includes(route.value.page) &&
@@ -581,8 +586,8 @@ function presentError(
                 <td>
                   <button type="button" class="asset-title-button" :title="asset.title" :aria-current="asset.assetId === selectedAssetId ? 'true' : undefined" @click.stop="openAsset(asset.assetId)">
                     <span class="asset-title-copy">
-                      <span class="asset-title-text">{{ asset.title }}</span>
-                      <span v-if="appliedQuery && asset.matchedSnippet" class="asset-snippet">{{ asset.matchedSnippet }}</span>
+                      <span class="asset-title-text"><span v-if="asset.knowledgeNumber != null">#{{ asset.knowledgeNumber }} · </span>{{ asset.title }}</span>
+                      <span v-if="appliedQuery && asset.matchedSnippet && asset.matchedSnippet.replace(/<\/?mark\b[^>]*>/giu, '').trim() !== asset.title.trim()" class="asset-snippet">{{ asset.matchedSnippet }}</span>
                     </span>
                   </button>
                 </td>
@@ -593,7 +598,7 @@ function presentError(
             </tbody>
           </table>
         </section>
-        <nav class="asset-pagination" aria-label="知识资产分页">
+        <nav v-if="assetTotal > 0 && !assetsError" class="asset-pagination" aria-label="知识资产分页">
           <p class="asset-page-summary" aria-live="polite">
             <template v-if="assetsLoading">正在读取…</template>
             <template v-else-if="assetsError">知识资产读取失败</template>
@@ -615,6 +620,7 @@ function presentError(
       </div>
 
       <aside v-if="previewOpen" class="asset-detail-pane" aria-label="知识资产详情">
+        <button v-if="recordSource" type="button" class="quiet-button asset-record-return" @click="navigateHash(recordSource.hash)">{{ recordSource.label }}</button>
         <div class="asset-detail-tools">
           <button type="button" class="icon-button" :aria-label="route.expanded ? '收起阅读视图' : '展开阅读'" @click="expandPreview"><UiIcon :name="route.expanded ? 'minimize' : 'expand'" /></button>
           <button type="button" class="icon-button" aria-label="关闭详情" @click="closePreview"><UiIcon name="close" /></button>
@@ -631,7 +637,7 @@ function presentError(
         </div>
         <article v-else-if="assetDetail" class="asset-detail">
           <span class="asset-type" :class="`asset-tone-${assetDetail.type}`">{{ displayValue(assetDetail.type) }}</span>
-          <h2>{{ assetDetail.title }}</h2>
+          <h2><span v-if="assetDetail.knowledgeNumber != null">#{{ assetDetail.knowledgeNumber }} · </span>{{ assetDetail.title }}</h2>
           <div class="asset-detail-tags">
             <span class="pill">{{ assetDetail.scope === "GLOBAL" ? "全局知识" : assetDetail.workspace }}</span>
             <span class="pill">{{ shortDate(assetDetail.modifiedAt) }} 更新</span>
@@ -715,6 +721,8 @@ function presentError(
         <div v-else class="candidate-list">
           <article v-for="item in inboxPageItems" :key="item.assetId" class="candidate-card" :class="{ selected: selectedInboxItem?.assetId === item.assetId }" @click="openInbox(item)">
             <div class="candidate-card-head">
+              <span v-if="item.candidateId" class="pill">候选 #{{ item.candidateId }}</span>
+              <span v-if="item.intent === 'REVISION' && item.knowledgeNumber != null" class="pill">修订 #{{ item.knowledgeNumber }}</span>
               <span class="asset-type" :class="`asset-tone-${item.type}`">{{ displayValue(item.type) }}</span>
               <span class="pill">{{ item.workspace ?? '全局' }}</span>
               <span class="candidate-status" :data-status="inboxChangeType(item)">{{ inboxChangeType(item) }}</span>
@@ -774,6 +782,8 @@ function presentError(
               <button type="button" class="secondary-button" @click="inboxOriginalExpanded = false; inboxOriginalOpen = true">查看原文<UiIcon name="external" /></button>
             </header>
             <dl class="inbox-candidate-meta">
+              <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd>候选 #{{ selectedInboxItem.candidateId }}</dd></div>
+              <div v-if="selectedInboxItem.intent === 'REVISION' && selectedInboxItem.knowledgeNumber != null"><dt>修订目标</dt><dd>修订 #{{ selectedInboxItem.knowledgeNumber }}</dd></div>
               <div><dt>工作区</dt><dd :title="selectedInboxItem.workspace ?? '全局'">{{ selectedInboxItem.workspace ?? '全局' }}</dd></div>
               <div><dt>内容类型</dt><dd><span class="asset-type" :class="`asset-tone-${selectedInboxItem.type}`">{{ displayValue(selectedInboxItem.type) }}</span></dd></div>
               <div><dt>变更类型</dt><dd><span class="candidate-status" :data-status="inboxChangeType(selectedInboxItem)">{{ inboxChangeType(selectedInboxItem) }}</span></dd></div>
@@ -791,7 +801,7 @@ function presentError(
                 <details class="detail-disclosure">
                   <summary>完整元信息</summary>
                   <dl class="metadata-sheet">
-                    <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd><code>{{ selectedInboxItem.candidateId }}</code></dd></div>
+                    <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd><code>候选 #{{ selectedInboxItem.candidateId }}</code></dd></div>
                     <div><dt>资产 ID</dt><dd><code>{{ selectedInboxItem.assetId }}</code></dd></div>
                     <div><dt>范围</dt><dd>{{ displayValue(selectedInboxItem.scope) }}</dd></div>
                     <div><dt>工作区</dt><dd>{{ selectedInboxItem.workspace ?? "全局知识" }}</dd></div>
@@ -905,13 +915,14 @@ select:disabled { opacity: .5; cursor: default; }
 .asset-page-position { color: var(--muted); margin-left: 10px; white-space: nowrap; }
 
 /* 知识资产 */
-.library-split { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.asset-library-page { container-type: inline-size; container-name: asset-page; }
+.library-split { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
 .library-split.has-detail { grid-template-columns: minmax(0, 1fr) minmax(360px, 420px); }
-.library-split.expanded { grid-template-columns: minmax(0, 1fr); }
+.library-split.expanded { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .library-split.expanded .library-main { display: none; }
 .library-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 12px; padding: 16px 16px 14px 20px; background: var(--canvas); }
 .asset-table-scroll { padding: 0; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
-.asset-table { width: 100%; min-width: 560px; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13.5px; text-align: left; }
+.asset-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13.5px; text-align: left; }
 .asset-type-column { width: 84px; }
 .asset-workspace-column { width: 150px; }
 .asset-date-column { width: 104px; }
@@ -933,6 +944,7 @@ select:disabled { opacity: .5; cursor: default; }
 .asset-detail-pane { position: relative; min-width: 0; min-height: 0; overflow: auto; padding: 22px 24px; border-left: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
 .library-split.expanded .asset-detail-pane { border-left: 0; padding-inline: max(24px, calc((100% - 820px) / 2)); }
 .asset-detail-tools { position: absolute; top: 12px; right: 12px; display: flex; gap: 2px; }
+.asset-record-return { margin: 0 64px 12px 0; }
 .asset-detail h2 { margin: 8px 40px 8px 0; font-size: 18px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .asset-detail-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .asset-detail-summary { margin: 0 0 16px; color: var(--muted); font-size: 13.5px; line-height: 1.7; }
@@ -945,7 +957,7 @@ select:disabled { opacity: .5; cursor: default; }
 .asset-detail-info .metadata-sheet code { overflow-wrap: anywhere; }
 
 /* 知识候选 */
-.inbox-page :deep(.candidate-manager) { max-width: 920px; width: 100%; }
+.inbox-page :deep(.candidate-manager) { width: 100%; }
 .inbox-page :deep(.candidate-toolbar) { gap: 10px 14px; }
 .inbox-toolbar { padding: 0; }
 .inbox-search { display: flex; flex: 1 1 220px; align-items: center; gap: 8px; min-width: 180px; max-width: 320px; height: 32px; margin-left: auto; padding: 0 8px 0 10px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
@@ -960,7 +972,7 @@ select:disabled { opacity: .5; cursor: default; }
 .inbox-help-copy h2 { color: var(--ink); font-size: 13px; margin-bottom: 10px; }
 .inbox-help-copy p + p { margin-top: 8px; }
 .candidate-scroll { padding: 0 4px; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
-.candidate-list { display: grid; gap: 12px; max-width: 920px; }
+.candidate-list { display: grid; gap: 12px; }
 .candidate-card { display: grid; gap: 6px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); cursor: default; }
 .candidate-card.selected { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
 .candidate-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -968,7 +980,7 @@ select:disabled { opacity: .5; cursor: default; }
 .candidate-card h3 { margin: 4px 0 0; font-size: 15px; font-weight: 600; line-height: 1.4; }
 .candidate-title { text-align: left; overflow-wrap: anywhere; }
 .candidate-title:hover { color: var(--accent); }
-.candidate-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 6px; color: var(--muted); font-size: 13.5px; line-height: 1.65; }
+.candidate-card > .candidate-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 6px; color: var(--muted); font-size: 13.5px; line-height: 1.65; }
 .candidate-note { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
 .candidate-note.has-problem { color: var(--warning); }
 .candidate-note .ui-icon { width: 12px; height: 12px; }
@@ -993,7 +1005,6 @@ select:disabled { opacity: .5; cursor: default; }
 .inbox-diagnostics > summary { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .inbox-diagnostics > summary .ui-icon { color: var(--warning); }
 .inbox-diagnostics .diagnostic-list { margin-top: 12px; }
-.candidate-pagination { max-width: 920px; }
 .candidate-spinner { flex-shrink: 0; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: candidate-spin 1s linear infinite; }
 @keyframes candidate-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .candidate-spinner { animation: none; } }
@@ -1025,8 +1036,22 @@ select:disabled { opacity: .5; cursor: default; }
 
 @media (max-width: 1100px) {
   .asset-library-page { padding-inline: 16px; }
-  .library-split.has-detail { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(260px, 45%) minmax(0, 1fr); }
-  .library-split.has-detail .asset-detail-pane { border-left: 0; border-top: 1px solid var(--line); }
+}
+@container asset-page (max-width: 1120px) {
+  .library-split.has-detail:not(.expanded) { grid-template-columns: minmax(0, 1fr) 360px; }
+  .has-detail .asset-workspace-column, .has-detail .asset-table th:nth-child(3), .has-detail .asset-table td:nth-child(3) { display: none; }
+}
+@container asset-page (max-width: 940px) {
+  .has-detail .asset-date-column, .has-detail .asset-table th:nth-child(4), .has-detail .asset-table td:nth-child(4) { display: none; }
+}
+@container asset-page (max-width: 780px) {
+  .library-split.has-detail:not(.expanded) { grid-template-columns: minmax(0, 1fr); }
+  .library-split.has-detail .library-main { display: none; }
+  .library-split.has-detail .asset-detail-pane { border-left: 0; }
+  .asset-workspace-column, .asset-table th:nth-child(3), .asset-table td:nth-child(3) { display: none; }
+}
+@container asset-page (max-width: 560px) {
+  .asset-date-column, .asset-table th:nth-child(4), .asset-table td:nth-child(4) { display: none; }
 }
 @media (max-width: 700px) {
   .asset-library-page { padding: 0 12px 12px; gap: 12px; }

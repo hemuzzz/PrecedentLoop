@@ -6,7 +6,7 @@ export interface RecallProjection {
   recallId: string; authorizedWorkspaces: string[]; queries: string[];
   occurredAt: string; diagnostics: string[]; budget: RecallResult["budget"];
 }
-export interface ItemProjection extends Source { recallItemId: string;
+export interface ItemProjection extends Source { recallItemId: string; assetTitle: string | null;
   deliveredMode: string; deliveryReasons: string[]; readCount: number; totalUsedCount: number }
 export interface UsageProjection extends Source { id: string; kind: "READ" | "USED"; authorizedWorkspaces: string[];
   occurredAt: string; recallItemId: string | null; readRef: string | null; assetTitle: string | null }
@@ -23,7 +23,7 @@ export class KnowledgeProjection {
       diagnostics: JSON.parse(r.diagnostics) as string[], budget: JSON.parse(r.budget) as RecallResult["budget"] }));
     return { items, total: this.count("recall_operation") };
   }
-  recall(id: string) {
+  async recall(id: string) {
     const row = this.repository.db.prepare<[string], { n: number }>("SELECT count(*) AS n FROM recall_operation WHERE recall_id=?").get(id);
     if (!row?.n) return null;
     const { queriesJson, ...raw } = this.repository.db.prepare<[string], { recallId: string; scopes: string; queriesJson: string;
@@ -32,10 +32,18 @@ export class KnowledgeProjection {
       occurred_at AS occurredAt, diagnostics_json AS diagnostics, budget_json AS budget FROM recall_operation WHERE recall_id=?`).get(id)!;
     const operation: RecallProjection = { ...raw, queries: JSON.parse(queriesJson) as string[], authorizedWorkspaces: JSON.parse(raw.scopes) as string[],
       diagnostics: JSON.parse(raw.diagnostics) as string[], budget: JSON.parse(raw.budget) as RecallResult["budget"] };
-    return { operation, items: this.items("i.recall_id=?", id) };
+    const rows = this.items("i.recall_id=?", id);
+    const titles = new Map<string, string>();
+    if (rows.length) {
+      const scan = await scanAssetRepository(this.scanOptions);
+      if (!scan.isComplete) throw new Error("Asset qualification unavailable");
+      for (const asset of scan.assets) titles.set(asset.frontmatter.id, asset.frontmatter.title);
+    }
+    const items: ItemProjection[] = rows.map((r) => ({ ...r, assetTitle: titles.get(r.assetId) ?? null }));
+    return { operation, items };
   }
-  items(condition: "i.recall_id=?" | "i.asset_id=?", id: string): ItemProjection[] {
-    const rows = this.repository.db.prepare<[string], Omit<ItemProjection, "deliveryReasons"> & { delivery: string }>(`SELECT
+  items(condition: "i.recall_id=?" | "i.asset_id=?", id: string): Omit<ItemProjection, "assetTitle">[] {
+    const rows = this.repository.db.prepare<[string], Omit<ItemProjection, "deliveryReasons" | "assetTitle"> & { delivery: string }>(`SELECT
       i.recall_item_id AS recallItemId, i.asset_id AS assetId, i.content_hash AS contentHash, i.asset_scope AS assetScope,
       i.asset_workspace AS assetWorkspace,
       i.delivered_mode AS deliveredMode, i.delivery_reasons_json AS delivery,

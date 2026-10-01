@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile, symlink, unlink } from "node:fs/promises";
@@ -8,8 +9,6 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import { AssetContentVersionRepository } from "../src/asset/content-version.js";
 import { CandidateService, type CandidateSummary, type PrepareItem } from "../src/asset/candidate-service.js";
-import { migrateCandidateStore } from "../src/asset/candidate-repository.js";
-import { migrateKnowledge } from "../src/knowledge/repository.js";
 import { freezeAssets, releaseAssets, withRepositoryAccess } from "../src/asset/coordination.js";
 import { scanInboxRepository, scanAssetRepository } from "../src/asset/scanner.js";
 
@@ -21,8 +20,8 @@ async function fixture() {
   const options = { repositoryPath: join(root, "repository"), databasePath: join(root, "data.sqlite"), workspaceConfigPath: join(root, "workspaces.json") };
   await mkdir(join(options.repositoryPath, "assets"), { recursive: true });
   await writeFile(options.workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [] }));
-  migrateKnowledge(options.databasePath, false, true);
-  migrateCandidateStore(options.databasePath);
+  initializeDatabase(options.databasePath);
+
   const service = new CandidateService(options);
   await service.initialize();
   return { root, options, service, cleanup: () => rm(root, { recursive: true, force: true }) };

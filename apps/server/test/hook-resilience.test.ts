@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 const root = new URL(process.env.PRECEDENT_LOOP_TEST_DIST === "1" ? "../dist/" : "../src/", import.meta.url);
-import { migrateKnowledge } from "../test-support/knowledge-fixture.js";
+import { initializeDatabase } from "../test-support/knowledge-fixture.js";
 const { AssetSearchService }: typeof import("../src/asset/index.js") = await import(new URL("asset/index.js", root).href);
 console.log(`F05_MODULE_ROOT ${root.href}`);
 test("F05 a real SQLite exclusive lock cannot stall the optional Hook for five seconds", async () => {
@@ -15,7 +15,7 @@ test("F05 a real SQLite exclusive lock cannot stall the optional Hook for five s
   const dbPath = join(directory, "db.sqlite");
   const config = join(directory, "workspaces.json");
   await writeFile(config, JSON.stringify({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [directory] }] }));
-  migrateKnowledge(dbPath, false, true);
+  initializeDatabase(dbPath);
   const db = new Database(dbPath);
   try {
     db.exec("BEGIN EXCLUSIVE");
@@ -46,7 +46,7 @@ test("F05 the Hook's separate pure Asset reader also uses a short real SQLite lo
   const databasePath = join(directory, "db.sqlite");
   const workspaceConfigPath = join(directory, "workspaces.json");
   await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [directory] }] }));
-  migrateKnowledge(databasePath, false, true);
+  initializeDatabase(databasePath);
   const db = new Database(databasePath);
   const reader = new AssetSearchService({ databasePath, workspaceConfigPath, repositoryPath: directory, busyTimeoutMs: 100, refreshIndex: async () => undefined });
   try {

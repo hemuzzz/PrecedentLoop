@@ -36,10 +36,10 @@ export PRECEDENT_LOOP_WORKSPACES_PATH='/absolute/scratch/config/workspaces.json'
 export PRECEDENT_LOOP_LOG_PATH='/absolute/scratch/logs/server.log'
 export PORT='3000'
 
-# Create the database once (the maintenance CLI runs from the build output)
+# Initialize baseline version 1 once in an empty database; existing databases are refused.
+# The maintenance CLI runs from the build output.
 pnpm --filter @precedent-loop/server build
-pnpm --filter @precedent-loop/server knowledge:migrate --offline --initialize
-pnpm --filter @precedent-loop/server candidate:migrate --offline
+pnpm --filter @precedent-loop/server init-database --offline
 
 pnpm --filter @precedent-loop/server dev
 ```

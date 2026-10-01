@@ -35,7 +35,7 @@ test("setup IPC admits only the exact packaged file URL and validates every requ
     await assert.rejects(dispatch(method, url, null), error, method);
   }
   for (const path of ["relative", "/tmp/\0bad", ""]) await assert.rejects(dispatch("checkDirectory", url, { path }), /INVALID_ARGUMENT/);
-  await assert.rejects(dispatch("prepareDirectory", url, { path: "/tmp/data", syncRiskConfirmed: "yes", upgradeConfirmed: false, writersStopped: false }), /INVALID_ARGUMENT/);
+  await assert.rejects(dispatch("prepareDirectory", url, { path: "/tmp/data", syncRiskConfirmed: "yes" }), /INVALID_ARGUMENT/);
   await assert.rejects(dispatch("selectExecutable", url, { agent: "shell" }), /INVALID_ARGUMENT/);
   await assert.rejects(dispatch("planIntegrations", url, { agent: "claude", items: ["mcp", "mcp"] }), /INVALID_ARGUMENT/);
   for (const selections of [[], [{ agent: "claude", items: ["mcp"] }, { agent: "claude", items: ["skills"] }], [{ agent: "codex", items: ["mcp"], path: "/tmp/foreign" }]]) {
@@ -72,7 +72,7 @@ test("concurrent IPC mutations are rejected while state and progress remain read
   const service = { prepareDirectory: () => blocked, getState: async () => "working" } as unknown as SetupService;
   const dispatcher = createSetupDispatcher(file, service, { selectDirectory: async () => null, selectExecutable: async () => null, openLogs: async () => {}, quit: () => {}, getAppInfo: () => ({ version: "test" }), checkForUpdates: async () => {}, revealPath: async () => {}, selectDiagnosticDestination: async () => null });
   const dispatch = (method: SetupMethod, url: string, raw: unknown) => dispatcher(method, { url, mainWindow: true, mainFrame: true }, raw);
-  const preparation = dispatch("prepareDirectory", pathToFileURL(file).href, { path: "/tmp/data", syncRiskConfirmed: false, upgradeConfirmed: false, writersStopped: false });
+  const preparation = dispatch("prepareDirectory", pathToFileURL(file).href, { path: "/tmp/data", syncRiskConfirmed: false });
   await assert.rejects(dispatch("complete", pathToFileURL(file).href, {}), /SETUP_BUSY/);
   await assert.rejects(dispatch("applyIntegrations", pathToFileURL(file).href, { planId: "c8d7e5ef-a3d6-4b87-928e-f9a070afdbb4" }), /SETUP_BUSY/);
   await assert.rejects(dispatch("importWorkspaces", pathToFileURL(file).href, { planId: "c8d7e5ef-a3d6-4b87-928e-f9a070afdbb4" }), /SETUP_BUSY/);

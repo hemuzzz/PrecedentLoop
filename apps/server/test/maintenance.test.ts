@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore, persistentRows } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase, persistentRows } from "../test-support/knowledge-fixture.js";
 import { CandidateService } from "../src/asset/candidate-service.js";
 const dist = process.env.PRECEDENT_LOOP_TEST_DIST === "1";
 const root = new URL(dist ? "../dist/" : "../src/", import.meta.url);
@@ -76,7 +76,7 @@ async function fixture() {
   const assetId = new SnowflakeIdGenerator().next("ast");
   const source = `---\nid: ${assetId}\ntype: MEMORY\nscope: GLOBAL\ntitle: maintenancetoken\nsummary: maintenancetoken\n---\nmaintenancetoken\n`;
   await writeFile(join(options.repositoryPath, "assets/global/memories/a.md"), source);
-  migrateKnowledge(options.databasePath, false, true); migrateCandidateStore(options.databasePath);
+  initializeDatabase(options.databasePath);
   const index = await assets.AssetIndexManager.create(options); await index.synchronize();
   const runtime = knowledgeRuntime(options, () => index.status());
   await writeFile(options.workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [directory] }] }));

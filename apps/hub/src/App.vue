@@ -45,6 +45,12 @@ function documentMainFocus() {
   document.getElementById("main-content")?.focus();
 }
 function shortcut(event: KeyboardEvent) {
+  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (event.code === "BracketLeft" || event.code === "BracketRight")) {
+    event.preventDefault();
+    // popstate still passes through navigation.ts's unsaved-edit guard.
+    if (!event.repeat) history.go(event.code === "BracketLeft" ? -1 : 1);
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key === ",") {
     event.preventDefault(); navigate("settings", "general"); return;
   }

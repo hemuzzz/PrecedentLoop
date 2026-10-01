@@ -27,6 +27,7 @@ import {
   type RestSuccessResponse,
 } from "./contracts/index.js";
 import type { OverviewApplicationService } from "./overview.js";
+import { DatabaseSchemaError } from "../storage/schema.js";
 import { RestError, invalidRequest } from "./errors.js";
 import {
   HubAssetApplicationService,
@@ -187,11 +188,11 @@ export function createRestApiApp(dependencies: RestApiDependencies): Hono {
     const query = parseStrictQuery(context, ["offset", "limit"], factListQuerySchema);
     return success(context, dependencies.projection.recalls(query.offset, query.limit));
   });
-  app.get("/api/recalls/:recallId", (context) => {
+  app.get("/api/recalls/:recallId", async (context) => {
     parseStrictQuery(context, [], z.object({}).strict());
     const id = context.req.param("recallId");
     if (!/^usg[0-9]+$/u.test(id)) throw invalidRequest("INPUT_INVALID", "Invalid reference");
-    const recall = dependencies.projection.recall(id);
+    const recall = await dependencies.projection.recall(id);
     if (!recall) throw new RestError(404, { code: "SOURCE_NOT_FOUND", message: "Recall not found", retryable: false });
     return success(context, recall);
   });
@@ -333,6 +334,7 @@ function mapRestError(error: unknown, onInternalError: ((error: unknown) => void
       retryable: true,
     });
   }
+  if (error instanceof DatabaseSchemaError) return new RestError(503, { code: error.code, message: error.message, retryable: false });
   if (error instanceof KnowledgeError) return new RestError(503, { code: error.code, message: error.code, retryable: true });
   onInternalError?.(error);
   return new RestError(500, {

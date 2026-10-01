@@ -159,7 +159,7 @@ try {
     })),
   ]);
   // Startup never migrates; use the compiled offline installation commands.
-  await migrateOffline();
+  await initializeOffline();
 
   child = spawnServer();
   const firstListening = await waitForListening(child);
@@ -382,9 +382,9 @@ try {
     await rm(path, { force: true });
   }
   child = spawnServer();
-  await assert.rejects(waitForListening(child), /KNOWLEDGE_MIGRATION_REQUIRED/u);
+  await assert.rejects(waitForListening(child), /DATABASE_SCHEMA_INVALID/u);
   child = undefined;
-  await migrateOffline();
+  await initializeOffline();
   child = spawnServer();
   await waitForListening(child);
   client = await connectClient();
@@ -407,7 +407,7 @@ try {
     recallId: ablation.recallId,
     confirmedAssetId: ids.migrationBridge,
     restart: "preserved-runtime-data",
-    sqliteRebuild: "explicit-migration-catalog-restored-runtime-data-cleared",
+    sqliteRebuild: "explicit-initialization-catalog-restored-runtime-data-cleared",
   })}\n`);
 } finally {
   await client?.close().catch(() => undefined);
@@ -423,12 +423,10 @@ function spawnServer() {
   });
 }
 
-async function migrateOffline() {
+async function initializeOffline() {
   await mkdir(dirname(databasePath), { recursive: true });
-  for (const args of [["migrate-knowledge", "--offline", "--initialize"], ["migrate-candidates", "--offline"]]) {
-    const migrated = await runNode(join(serverRoot, "dist", "maintenance-cli.js"), args);
-    assert.equal(migrated.code, 0, migrated.stderr);
-  }
+  const initialized = await runNode(join(serverRoot, "dist", "maintenance-cli.js"), ["init-database", "--offline"]);
+  assert.equal(initialized.code, 0, initialized.stderr);
 }
 
 async function connectClient() {

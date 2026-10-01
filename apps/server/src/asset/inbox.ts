@@ -17,6 +17,8 @@ export interface InboxDiagnostic {
 }
 
 export interface InboxItem {
+  knowledgeNumber: number | null;
+  candidateId?: string;
   assetId: string;
   contentHash: string;
   frontmatter: AssetFrontmatter;
@@ -88,6 +90,7 @@ export class InboxApplicationService {
       items: result.assets
         .filter(({ frontmatter }) => !formalIds.has(frontmatter.id))
         .map((asset) => ({
+          knowledgeNumber: null,
           assetId: asset.frontmatter.id,
           contentHash: asset.contentHash,
           frontmatter: asset.frontmatter,

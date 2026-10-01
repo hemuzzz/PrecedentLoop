@@ -18,11 +18,31 @@ import {
   SystemStatusApplicationService,
 } from "../src/http/index.js";
 
-import { knowledgeRuntime, migrateKnowledge, migrateCandidateStore, persistentRows } from "../test-support/knowledge-fixture.js";
+import { knowledgeRuntime, initializeDatabase, persistentRows } from "../test-support/knowledge-fixture.js";
 
 const AUTHORITY = "127.0.0.1:3210";
 
 type RestFixture = Awaited<ReturnType<typeof createFixture>>;
+
+test("number synchronization preserves Recall/Read/Used and keeps numbers out of model-visible results", async () => {
+  const fixture = await createFixture();
+  try {
+    const before = await fixture.service.recall({ capabilityIds: [fixture.alpha], queries: ["shared knowledge alpha"] });
+    assert.ok(before.items.length > 0);
+    const read = await fixture.service.read({ capabilityIds: [fixture.alpha], recallItemId: before.items[0]!.recallItemId });
+    const rows = fixture.rows();
+    await fixture.indexManager.synchronize();
+    assert.deepEqual(fixture.rows(), rows);
+    await fixture.service.used({ capabilityIds: [fixture.alpha], recallItemId: before.items[0]!.recallItemId });
+    const after = await fixture.service.recall({ capabilityIds: [fixture.alpha], queries: ["shared knowledge alpha"] });
+    assert.ok(after.items.length > 0);
+    assert.equal(after.items[0]!.assetId, before.items[0]!.assetId);
+    for (const result of [before, read, after]) assert.equal(JSON.stringify(result).includes("knowledgeNumber"), false);
+    const response = await getJson(fixture, `/api/assets/${fixture.alphaAssetId}`);
+    assert.equal(response.status, 200);
+    assert.equal(typeof (dataObject(response.body).asset as Record<string, unknown>).knowledgeNumber, "number");
+  } finally { await fixture.close(); }
+});
 
 test("N09 Asset Library enforces full-library Workspace filters, strict parameters, and stable sorting", async () => {
   const fixture = await createFixture();
@@ -170,6 +190,32 @@ test("N09 Asset Detail returns current Markdown, aggregates Usage, returns recen
   }
 });
 
+test("Asset Detail renders CJK emphasis while preserving ordinary emphasis and disabled HTML/linkify/typographer", async () => {
+  const fixture = await createFixture();
+  try {
+    await writeAsset(fixture.alphaAssetPath, {
+      id: fixture.alphaAssetId, type: "MEMORY", scope: "WORKSPACE", workspace: "alpha",
+      title: "Markdown rendering", summary: "Rendering regression",
+      body: '**触发：**用户明确要求\n\n**ordinary bold**\n\n<script>alert("x")</script>\n\nhttps://example.com\n\n"quotes" -- ...\n\n| 左 | 右 |\n| :--- | ---: |\n| 文本 | 内容 |',
+    });
+    await fixture.indexManager.synchronize();
+    const response = await getJson(fixture, `/api/assets/${fixture.alphaAssetId}`);
+    assert.equal(response.status, 200);
+    const asset = dataObject(response.body).asset as Record<string, unknown>;
+    const html = String(asset.renderedMarkdown);
+    assert.match(html, /<strong>触发：<\/strong>用户明确要求/u);
+    assert.match(html, /<strong>ordinary bold<\/strong>/u);
+    assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/u);
+    assert.doesNotMatch(html, /<script>|<a /u);
+    assert.match(html, /&quot;quotes&quot; -- \.\.\./u);
+    assert.match(html, /<th style="text-align:left">左<\/th>/u);
+    assert.match(html, /<th style="text-align:right">右<\/th>/u);
+    assert.match(String(asset.rawMarkdown), /\*\*触发：\*\*用户明确要求/u);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("N09 Inbox scans live candidates, treats a missing directory as empty, and isolates ID conflicts", async () => {
   const fixture = await createFixture();
   try {
@@ -283,6 +329,7 @@ test("REST lists persistent Recall/Read/Used facts with strict pagination, asset
     assert.deepEqual(recalls[0]!.queries, ["shared knowledge"]);
     const detail = dataObject((await getJson(fixture, `/api/recalls/${recall.recallId}`)).body);
     assert.deepEqual((detail.items as Array<{ assetId: string }>).map(item => item.assetId), recall.items.map(item => item.assetId));
+    assert.ok((detail.items as Array<{ assetTitle: string | null }>).every(item => item.assetTitle === "Shared knowledge"));
     const workspaces = dataItems((await getJson(fixture, "/api/workspaces")).body);
     const alpha = workspaces.find(item => item.name === "alpha")!;
     assert.equal(alpha.authorizedRecallCount, 1); assert.equal(alpha.sourceRecallCount, 1);
@@ -302,6 +349,11 @@ test("REST lists persistent Recall/Read/Used facts with strict pagination, asset
     assert.equal(missing.length, 2);
     assert.ok(missing.every(item => item.assetTitle === null));
     assert.deepEqual(missing.map(item => item.id), filtered.map(item => item.id));
+    const missingRecall = dataObject((await getJson(fixture, `/api/recalls/${recall.recallId}`)).body);
+    const missingRecallItems = missingRecall.items as Array<{ assetId: string; assetTitle: string | null }>;
+    assert.equal(missingRecallItems.length, recall.items.length);
+    assert.equal(missingRecallItems.find(item => item.assetId === fixture.alphaAssetId)!.assetTitle, null);
+    assert.equal(missingRecallItems.find(item => item.assetId === fixture.globalAssetId)!.assetTitle, "Shared knowledge");
     assert.deepEqual(fixture.rows(), before);
 
     for (let i = 0; i < 101; i++) {
@@ -468,7 +520,7 @@ async function createFixture() {
   await utimes(globalAssetPath, new Date("2026-01-03T00:00:00.000Z"), new Date("2026-01-03T00:00:00.000Z"));
 
   await mkdir(join(rootPath, "data"), { recursive: true });
-  migrateKnowledge(databasePath, false, true); migrateCandidateStore(databasePath);
+  initializeDatabase(databasePath);
   const indexManager = await AssetIndexManager.create({
     databasePath,
     repositoryPath,

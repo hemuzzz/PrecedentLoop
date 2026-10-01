@@ -1,3 +1,4 @@
+import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { assessmentDirectory, CHECK_UNAVAILABLE, handleCaptureHook, hostTurnIdentity, recordAssessment } from "../src/hook/capture-assessment.js";
 import { handleCodexHook } from "../src/hook/user-prompt-submit.js";
-import { KnowledgeRepository, migrateKnowledge } from "../src/knowledge/repository.js";
+import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { WorkspaceCapabilityService } from "../src/workspace/capability.js";
 
 async function fixture(t: TestContext) {
@@ -73,7 +74,7 @@ test("Claude missing prompt_id is unavailable; declarations cannot cross host/se
 
 test("Claude context uses its protocol/tools and the exact same trusted capability service", async t => {
   const root = await fixture(t);
-  const databasePath = join(root, "db.sqlite"); migrateKnowledge(databasePath, false, true);
+  const databasePath = join(root, "db.sqlite"); initializeDatabase(databasePath);
   const workspaceConfigPath = join(root, "workspaces.json");
   await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [
     { name: "host", paths: [join(root, "project")] },

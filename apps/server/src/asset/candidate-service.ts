@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { openDatabase } from "../storage/schema.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
@@ -45,15 +46,13 @@ export class CandidateService {
 
   async initialize(): Promise<void> { await configureRepositoryCoordination(this.options.repositoryPath, this.options.databasePath); }
 
-  async list(bucket?: "PENDING" | "DEFERRED"): Promise<InboxResult & { items: ManagedInboxItem[]; managed: boolean }> {
+  async list(bucket?: "PENDING" | "DEFERRED"): Promise<Omit<InboxResult, "items"> & { items: ManagedInboxItem[]; managed: boolean }> {
     return withRepositoryAccess(this.options.repositoryPath, async () => {
       const inbox = await scanInbox(this.options);
       const formal = await scanFormalAssets(this.options);
       const database = this.database(true);
-      let records: CandidateRecord[] = [];
-      let managed = true;
+      let records: ReturnType<CandidateRepository["list"]>;
       try { records = new CandidateRepository(database).list(); }
-      catch (error) { if (!(error instanceof RepositoryOperationError && error.code === "CANDIDATE_MIGRATION_REQUIRED")) throw error; managed = false; }
       finally { database.close(); }
       const diagnostics = inbox.diagnostics.map(d => inboxDiagnostic(d, this.options));
       const items: ManagedInboxItem[] = [];
@@ -64,6 +63,7 @@ export class CandidateService {
           diagnostics.push({ code: "DUPLICATE_ASSET_ID", message: "此文件与正式知识同 ID，需明确登记修订基线", relativePath: asset.relativePath, assetId: asset.frontmatter.id });
         }
         const item: ManagedInboxItem = { assetId: asset.frontmatter.id, contentHash: asset.contentHash, frontmatter: asset.frontmatter,
+          knowledgeNumber: row?.knowledgeNumber ?? null,
           modifiedAt: asset.modifiedAt, rawMarkdown: asset.markdown, relativePath: asset.relativePath, scope: asset.frontmatter.scope,
           summary: asset.frontmatter.summary, title: asset.frontmatter.title, type: asset.frontmatter.type,
           workspace: asset.frontmatter.scope === "WORKSPACE" ? asset.frontmatter.workspace : null,
@@ -79,7 +79,7 @@ export class CandidateService {
         items.push(item);
       }
       for (const record of records) if (!inbox.assets.some(asset => asset.relativePath === record.relativePath && asset.frontmatter.id === record.assetId)) diagnostics.push({ code: "FILE_READ_ERROR", message: "已登记候选文件缺失或不再符合资格，请检查原文件", relativePath: record.relativePath, assetId: record.assetId });
-      return { items, diagnostics, managed };
+      return { items, diagnostics, managed: true };
     });
   }
 
@@ -338,7 +338,7 @@ export class CandidateService {
     } };
   }
 
-  private database(readonly = false): Database.Database { return new Database(this.options.databasePath, { fileMustExist: true, readonly, timeout: 0 }); }
+  private database(readonly = false): Database.Database { return openDatabase(this.options.databasePath, { readonly, timeout: 0 }); }
 }
 
 function assertCurrent(versions: AssetContentVersionRepository, asset: ScannedAsset, hash: string): void {

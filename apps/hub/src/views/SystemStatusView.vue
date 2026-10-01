@@ -14,6 +14,7 @@ import type { AgentName } from "../setup/bridge.js";
 
 const api = new HubApiClient();
 const status = ref<SystemStatus>();
+const appVersion = ref<string>();
 const loading = ref(false);
 const error = ref<HubApiError>();
 
@@ -39,6 +40,12 @@ const tone = (ok: boolean) => ok ? "ok" : "warn";
 const host = location.host;
 
 onMounted(refresh);
+onMounted(async () => {
+  try {
+    const bridge = await settingsBridge();
+    if (bridge) appVersion.value = (await bridge.getAppInfo()).version;
+  } catch { /* Keep the service version available if desktop metadata cannot be read. */ }
+});
 onBeforeUnmount(() => controller?.abort());
 
 async function loadStatus(): Promise<void> {
@@ -116,7 +123,7 @@ function formatUptime(seconds: number): string {
           <section class="system-card" aria-labelledby="service-status-section">
             <header class="system-card-heading"><h2 id="service-status-section">本地服务</h2><span class="system-dot" :class="tone(ready(status.service.readiness) && status.mcpEndpoint.ready)">{{ ready(status.service.readiness) ? status.mcpEndpoint.ready ? '运行中' : '知识连接未就绪' : displayValue(status.service.readiness) }}</span></header>
             <dl class="system-fields">
-              <div><dt>版本</dt><dd>{{ status.service.version }}</dd></div>
+              <div><dt>版本</dt><dd>{{ appVersion ?? status.service.version }}</dd></div>
               <div><dt>已运行</dt><dd>{{ formatUptime(status.service.uptimeSeconds) }}</dd></div>
               <div><dt>地址</dt><dd><code>{{ host }}{{ status.mcpEndpoint.path }}</code></dd></div>
             </dl>
@@ -173,7 +180,7 @@ function formatUptime(seconds: number): string {
 .system-page :deep(.page-heading p) { margin-top: 2px; font-size: 13px; line-height: 18px; }
 .system-page :deep(.page-actions .quiet-button) { height: 34px; padding-inline: 12px; gap: 8px; border-color: var(--line); font-size: 13px; }
 .system-content { padding: 0; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
-.system-dashboard { display: grid; gap: 16px; max-width: 1080px; }
+.system-dashboard { display: grid; gap: 16px; }
 .system-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .system-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .system-card-heading { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; }

@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import { openDatabase } from "../storage/schema.js";
+import { knowledgeNumberJoin, knowledgeNumberSelection } from "./knowledge-number.js";
 import { needsRepositoryAccess, withRepositoryAccess } from "./coordination.js";
 
 import type { AssetFrontmatter, AssetScope, AssetType, WorkspaceConfig } from "./schema.js";
@@ -49,6 +51,7 @@ export interface AssetLibraryListQuery {
 }
 
 export interface AssetLibraryItem {
+  knowledgeNumber: number | null;
   assetId: string;
   contentHash: string;
   matchedSnippet?: string;
@@ -64,6 +67,7 @@ export interface AssetLibraryItem {
 }
 
 export interface AssetLibraryReadResult extends AssetReadResult {
+  knowledgeNumber: number | null;
   bodyMarkdown: string;
   modifiedAt: string;
   relativePath: string;
@@ -107,6 +111,7 @@ export interface AssetSearchServiceOptions extends AssetScanOptions {
 }
 
 interface CatalogCandidate {
+  knowledgeNumber: number | null;
   assetId: string;
   assetScope: AssetScope;
   assetType: AssetType;
@@ -142,6 +147,7 @@ interface CurrentCatalogAsset {
 }
 
 interface RankedLibraryItem extends RankedSearchItem {
+  knowledgeNumber: number | null;
   asset: ScannedAsset;
 }
 
@@ -209,7 +215,7 @@ export class AssetSearchService {
   #diagnostics: AssetSearchDiagnostic[] = [];
 
   constructor(options: AssetSearchServiceOptions) {
-    this.#database = new Database(options.databasePath, { fileMustExist: true, readonly: true, timeout: options.busyTimeoutMs ?? 5000 });
+    this.#database = openDatabase(options.databasePath, { readonly: true, timeout: options.busyTimeoutMs ?? 5000 });
     this.#refreshIndex = options.refreshIndex;
     this.#scanOptions = {
       repositoryPath: options.repositoryPath,
@@ -322,7 +328,7 @@ export class AssetSearchService {
     if (normalized === undefined) {
       current.sort(compareCurrentCatalogAssets);
       return {
-        items: current.slice(offset, offset + limit).map(({ asset }) => libraryItem(asset)),
+        items: current.slice(offset, offset + limit).map(({ asset, candidate }) => libraryItem(asset, candidate.knowledgeNumber)),
         total: current.length,
         offset,
         limit,
@@ -339,7 +345,7 @@ export class AssetSearchService {
           : compareRankedItems(left, right),
       );
     return {
-      items: ranked.slice(offset, offset + limit).map(({ asset, item }) => libraryItem(asset, item)),
+      items: ranked.slice(offset, offset + limit).map(({ asset, item, knowledgeNumber }) => libraryItem(asset, knowledgeNumber, item)),
       total: ranked.length,
       offset,
       limit,
@@ -384,6 +390,7 @@ export class AssetSearchService {
 
     return {
       bodyMarkdown: asset.content,
+      knowledgeNumber: candidate.knowledgeNumber,
       contentHash: asset.contentHash,
       frontmatter: asset.frontmatter,
       markdown: asset.markdown,
@@ -714,6 +721,7 @@ function libraryCatalogSql(
 function catalogSelection(includeFts: boolean): string {
   return `
     SELECT
+      ${knowledgeNumberSelection},
       catalog.asset_id AS assetId,
       catalog.asset_type AS assetType,
       catalog.asset_scope AS assetScope,
@@ -726,6 +734,7 @@ function catalogSelection(includeFts: boolean): string {
       catalog.modified_at AS modifiedAt,
       ${includeFts ? "bm25(asset_fts)" : "NULL"} AS bm25
     FROM ${includeFts ? "asset_fts JOIN asset_catalog AS catalog ON catalog.rowid = asset_fts.rowid" : "asset_catalog AS catalog"}
+    ${knowledgeNumberJoin("catalog.asset_id")}
   `;
 }
 
@@ -884,6 +893,7 @@ function rankLibraryItem(
   const { frontmatter } = asset;
   return {
     asset,
+    knowledgeNumber: candidate.knowledgeNumber,
     assetId: frontmatter.id,
     bm25: candidate.bm25,
     fieldTier,
@@ -903,10 +913,11 @@ function rankLibraryItem(
   };
 }
 
-function libraryItem(asset: ScannedAsset, ranked?: AssetSearchItem): AssetLibraryItem {
+function libraryItem(asset: ScannedAsset, knowledgeNumber: number | null, ranked?: AssetSearchItem): AssetLibraryItem {
   const { frontmatter } = asset;
   return {
     assetId: frontmatter.id,
+    knowledgeNumber,
     contentHash: asset.contentHash,
     modifiedAt: asset.modifiedAt,
     relativePath: asset.relativePath,
