@@ -43,6 +43,7 @@
     "gray-matter": "4.0.3",
     "hono": "4.13.5",
     "markdown-it": "14.1.0",
+    "markdown-it-cjk-friendly": "2.0.3",
     "zod": "4.5.4"
   },
   "devDependencies": {

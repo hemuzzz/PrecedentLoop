@@ -14,6 +14,7 @@ import type { AgentName } from "../setup/bridge.js";
 
 const api = new HubApiClient();
 const status = ref<SystemStatus>();
+const appVersion = ref<string>();
 const loading = ref(false);
 const error = ref<HubApiError>();
 
@@ -39,6 +40,12 @@ const tone = (ok: boolean) => ok ? "ok" : "warn";
 const host = location.host;
 
 onMounted(refresh);
+onMounted(async () => {
+  try {
+    const bridge = await settingsBridge();
+    if (bridge) appVersion.value = (await bridge.getAppInfo()).version;
+  } catch { /* Keep the service version available if desktop metadata cannot be read. */ }
+});
 onBeforeUnmount(() => controller?.abort());
 
 async function loadStatus(): Promise<void> {
@@ -116,7 +123,7 @@ function formatUptime(seconds: number): string {
           <section class="system-card" aria-labelledby="service-status-section">
             <header class="system-card-heading"><h2 id="service-status-section">本地服务</h2><span class="system-dot" :class="tone(ready(status.service.readiness) && status.mcpEndpoint.ready)">{{ ready(status.service.readiness) ? status.mcpEndpoint.ready ? '运行中' : '知识连接未就绪' : displayValue(status.service.readiness) }}</span></header>
             <dl class="system-fields">
-              <div><dt>版本</dt><dd>{{ status.service.version }}</dd></div>
+              <div><dt>版本</dt><dd>{{ appVersion ?? status.service.version }}</dd></div>
               <div><dt>已运行</dt><dd>{{ formatUptime(status.service.uptimeSeconds) }}</dd></div>
               <div><dt>地址</dt><dd><code>{{ host }}{{ status.mcpEndpoint.path }}</code></dd></div>
             </dl>

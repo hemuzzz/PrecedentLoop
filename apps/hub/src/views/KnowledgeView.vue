@@ -78,6 +78,19 @@ async function refresh() {
 function openRecall(id?: string) {
   navigate('recalls', id, false, { offset: String(offset.value), limit: String(recallLimit.value) });
 }
+function openAsset(assetId: string) {
+  navigate('library', assetId, false, { from: location.hash });
+}
+const recallEffects: Record<string, string> = {
+  DIRECT: '已提供知识摘要，可继续读取全文',
+  ON_DEMAND: '已提供知识入口，需要时读取全文',
+  ASSET_LIMIT: '达到知识条数上限，部分结果未提供',
+  CHARACTER_LIMIT: '达到返回字数上限，部分结果未提供',
+  BUDGET_DOWNGRADED: '为控制返回长度，仅提供入口，未附摘要',
+  CANDIDATE_UNAVAILABLE: '部分知识已变化或不可用，未提供这些结果',
+  USAGE_WRITE_FAILED: '操作记录保存失败，本次未生成可追溯引用',
+};
+const recallEffect = (value: string) => recallEffects[value] ?? value;
 function moveRecallPage(page: number) {
   if (loading.value || page < 1 || page > recallPageCount.value || page === recallPage.value) return;
   navigate(route.value.page, undefined, false, { offset: String((page - 1) * recallLimit.value), limit: String(recallLimit.value) });
@@ -99,7 +112,7 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
 </script>
 <template>
   <main class="list-page" :class="{ 'workspace-page': route.page === 'workspaces', 'recall-list-page': recordList }">
-    <PageHeader :title="title" :subtitle="route.page === 'workspaces' ? '浏览知识归属与使用情况' : recallList ? '查看每次检索的内容与结果' : usageList ? '查看知识的读取与使用情况' : '只读知识投影'">
+    <PageHeader :title="title" :subtitle="route.page === 'workspaces' ? '浏览知识归属与使用情况' : recallList ? '查看每次检索的内容与结果' : usageList ? '查看知识的读取与使用情况' : '查看本次检索的结果与知识使用情况'">
       <button class="quiet-button" :disabled="loading" @click="refresh"><UiIcon v-if="route.page === 'workspaces' || recordList" name="refresh" />刷新</button>
     </PageHeader>
     <div v-if="recallList" class="recall-toolbar">
@@ -129,7 +142,7 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
     <div ref="recordScroll" class="list-scroll overview-content" :class="{ 'workspace-content': route.page === 'workspaces', 'recall-table-scroll': recordList }" :aria-busy="loading">
       <p v-if="loading" role="status">正在读取…</p><p v-else-if="error" role="alert">{{ error }} <button @click="refresh">重试</button></p>
       <template v-else>
-        <p v-if="route.page !== 'workspaces' && !recordList">仅显示已记录事实；知识交付时写入失败不会留下记录。授权范围与知识来源分别展示，多项目操作不可跨行相加。</p>
+        <p v-if="route.page !== 'workspaces' && !recordList">仅显示已成功记录的操作。知识标题为当前名称，来源保留召回时的归属。</p>
         <template v-if="route.page === 'workspaces' && workspaces">
           <div class="workspace-toolbar">
             <p class="workspace-scope-count">{{ workspaces.items.length }} 个工作区 <span>·</span> 1 个全局范围</p>
@@ -178,11 +191,18 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
         <template v-else-if="route.page === 'recalls' && detail">
           <button class="quiet-button" @click="openRecall()">返回召回列表</button><h2>检索表达</h2>
           <ul class="recall-expressions"><li v-for="(query, index) in detail.operation.queries" :key="index">{{ query }}</li></ul>
-          <p>授权：GLOBAL + {{ detail.operation.authorizedWorkspaces.join('、') || '无项目' }}</p>
-          <p>字符 {{ detail.operation.budget.modelVisibleCharacters }} / {{ detail.operation.budget.maxModelVisibleCharacters }}（知识 {{ detail.operation.budget.knowledgeContentCharacters }}，元数据 {{ detail.operation.budget.metadataCharacters }}）· 省略 {{ detail.operation.budget.omittedCount }}</p>
-          <p>{{ detail.operation.diagnostics.join('、') }}</p>
-          <section v-for="item in detail.items" :key="item.recallItemId" class="overview-section"><button class="quiet-button" @click="navigate('library',item.assetId)">{{ item.assetId }}</button><p>来源 {{ item.assetWorkspace ?? 'GLOBAL' }} · 交付 {{ item.deliveredMode }}</p><p>{{ item.deliveryReasons.join('、') }}</p><p>读取 {{ item.readCount }} · 使用 {{ item.totalUsedCount }}</p><code>{{ item.contentHash }}</code></section>
+          <p>找到 {{ detail.operation.budget.deliveredAssets + detail.operation.budget.omittedCount }} 条知识线索，提供 {{ detail.operation.budget.deliveredAssets }} 条，省略 {{ detail.operation.budget.omittedCount }} 条。</p>
+          <p v-for="code in detail.operation.diagnostics" :key="code">{{ recallEffect(code) }}</p>
+          <section v-for="item in detail.items" :key="item.recallItemId" class="overview-section"><button class="quiet-button" :disabled="item.assetTitle === null" @click="openAsset(item.assetId)">{{ item.assetTitle ?? '知识已不可用' }}</button><p>来源：{{ item.assetWorkspace ?? '全局' }} · {{ recallEffect(item.deliveredMode) }}</p><p v-for="reason in item.deliveryReasons" :key="reason">{{ recallEffect(reason) }}</p><p>{{ item.readCount ? `已读取 ${item.readCount} 次` : '尚未读取' }} · {{ item.totalUsedCount ? `已使用 ${item.totalUsedCount} 次` : '尚未使用' }}</p></section>
           <p v-if="!detail.items.length">本次召回没有交付条目。</p>
+          <details class="detail-disclosure">
+            <summary>诊断详情</summary>
+            <p>授权：GLOBAL + {{ detail.operation.authorizedWorkspaces.join('、') || '无项目' }}</p>
+            <p>字符 {{ detail.operation.budget.modelVisibleCharacters }} / {{ detail.operation.budget.maxModelVisibleCharacters }}（知识 {{ detail.operation.budget.knowledgeContentCharacters }}，元数据 {{ detail.operation.budget.metadataCharacters }}）</p>
+            <p>知识条数上限 {{ detail.operation.budget.maxAssets }} · 未附摘要 {{ detail.operation.budget.downgradedCount }} 条</p>
+            <p>召回 ID：<code>{{ detail.operation.recallId }}</code></p>
+            <div v-for="item in detail.items" :key="item.recallItemId" class="recall-evidence"><p>资产 ID：<code>{{ item.assetId }}</code></p><p>条目 ID：<code>{{ item.recallItemId }}</code></p><p>内容 Hash：<code>{{ item.contentHash }}</code></p></div>
+          </details>
         </template>
         <template v-else-if="recallList">
           <table v-if="recalls.length" class="recall-table" aria-label="召回记录">
@@ -212,7 +232,7 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
             <tbody>
               <tr v-for="item in usage" :key="item.id">
                 <td>
-                  <button class="usage-asset-button" :disabled="!item.assetTitle" :title="item.assetTitle ?? undefined" @click="navigate('library', item.assetId)">
+                  <button class="usage-asset-button" :disabled="!item.assetTitle" :title="item.assetTitle ?? undefined" @click="openAsset(item.assetId)">
                     <UiIcon name="document" />
                     <span class="usage-asset-copy"><span class="usage-asset-title">{{ item.assetTitle ?? '知识暂不可用' }}</span><span class="usage-asset-source">来源：{{ item.assetWorkspace ?? '全局' }}</span></span>
                   </button>
@@ -227,7 +247,7 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
         </template>
       </template>
     </div>
-    <nav v-if="recordList" class="recall-pagination" :aria-label="`${title}分页`">
+    <nav v-if="recordList && total > 0 && !error" class="recall-pagination" :aria-label="`${title}分页`">
       <p class="recall-page-summary" aria-live="polite">
         <template v-if="loading">正在读取…</template>
         <template v-else-if="error">{{ title }}读取失败</template>
@@ -251,6 +271,7 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
   </main>
 </template>
 <style scoped>
+.recall-evidence { overflow-wrap: anywhere; margin-top: 16px; }
 .workspace-page,
 .recall-list-page {
   padding: 0 24px 20px;

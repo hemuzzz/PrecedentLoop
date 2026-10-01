@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import type { AiProvider } from "../api/types.js";
 import UiIcon from "./UiIcon.vue";
+import { agentNames } from "../setup/integration-presentation.js";
 
 const props = defineProps<{ workspaces: string[]; providers: AiProvider[]; busy: boolean; preparing: boolean; error: string }>();
 const emit = defineEmits<{ submit: []; close: [] }>();
@@ -49,7 +50,7 @@ function dropFiles(event: DragEvent): void {
         <div>
           <h2>导入知识</h2>
           <p>添加 Markdown 文档，由 AI 整理为待审阅候选。</p>
-          <p class="heading-note">整批资料一次整理，可生成 0–N 个候选，不与文件一一对应。</p>
+          <p class="heading-note">AI 会按内容整理成候选：一个文件可能整理出多条，也可能没有值得保留的内容。</p>
         </div>
       </header>
 
@@ -106,7 +107,7 @@ function dropFiles(event: DragEvent): void {
               <div v-for="value in providers" :key="value.id" class="provider-option" :class="{ selected: provider === value.id && value.available, unavailable: !value.available }">
                 <label class="provider-choice">
                   <input v-model="provider" type="radio" name="import-provider" :value="value.id" :disabled="busy || !value.available" />
-                  <span class="provider-copy"><strong>{{ value.id === 'codex' ? 'Codex' : 'Claude' }}</strong><small>{{ value.available ? '已安装，可发起整理。' : '暂不可用，请检查本机配置。' }}</small></span>
+                  <span class="provider-copy"><strong>{{ agentNames[value.id] }}</strong><small>{{ value.available ? '已安装，可发起整理。' : '暂不可用，请检查本机配置。' }}</small></span>
                   <span class="provider-status" :class="{ available: value.available }">{{ value.available ? '可用' : '不可用' }}</span>
                 </label>
                 <details v-if="!value.available && value.reason" class="provider-reason"><summary>查看原因</summary><p>{{ value.reason }}</p></details>

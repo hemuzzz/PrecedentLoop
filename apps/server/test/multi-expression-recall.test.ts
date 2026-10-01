@@ -65,10 +65,14 @@ async function fixture(t: TestContext) {
   return { ...options, config, root, manager, repository, capabilities, search, service, projection, alpha, beta, asset };
 }
 
-test("usage projection resolves current titles without dropping unavailable assets or changing historical facts", async t => {
+test("usage and recall projections resolve current titles without dropping unavailable assets or changing historical facts", async t => {
   const f = await fixture(t);
   const asset = await f.asset("使用记录标题");
   await f.manager.synchronize();
+  const recall = await f.service.recall({ capabilityIds: [f.alpha], queries: ["使用记录标题"] });
+  const initialRecall = (await f.projection.recall(recall.recallId!))!;
+  assert.equal(initialRecall.items.length, 1);
+  assert.equal(initialRecall.items[0]!.assetTitle, "使用记录标题");
   const read = await f.service.read({ capabilityIds: [f.alpha], assetId: asset.assetId });
   await f.service.used({ capabilityIds: [f.alpha], readRef: read.readRef });
   const initial = await f.projection.usage();
@@ -79,13 +83,23 @@ test("usage projection resolves current titles without dropping unavailable asse
   assert.equal((await f.projection.usage(2, 1)).items.length, 0);
   await writeFile(asset.path, (await readFile(asset.path, "utf8")).replace("使用记录标题", "更新后的标题"));
   const renamed = await f.projection.usage(0, 20, asset.assetId);
+  const renamedRecall = (await f.projection.recall(recall.recallId!))!;
+  assert.equal(renamedRecall.items[0]!.assetTitle, "更新后的标题");
+  assert.deepEqual({ ...renamedRecall.items[0], assetTitle: "使用记录标题" }, initialRecall.items[0]);
   assert.ok(renamed.items.every(item => item.assetTitle === "更新后的标题"));
   assert.deepEqual(renamed.items.map(item => item.contentHash), initial.items.map(item => item.contentHash));
+  await writeFile(asset.path, (await readFile(asset.path, "utf8")).replace("更新后的标题", ""));
+  const invalidRecall = (await f.projection.recall(recall.recallId!))!;
+  assert.equal(invalidRecall.items[0]!.assetTitle, null);
   await rm(asset.path);
   const removed = await f.projection.usage();
   assert.equal(removed.total, 2);
   assert.ok(removed.items.every(item => item.assetTitle === null));
   assert.deepEqual(removed.items.map(item => item.id), initial.items.map(item => item.id));
+  const removedRecall = (await f.projection.recall(recall.recallId!))!;
+  assert.deepEqual({ ...removedRecall.items[0], assetTitle: "使用记录标题" }, initialRecall.items[0]);
+  assert.equal(removedRecall.items[0]!.assetTitle, null);
+  assert.deepEqual(removedRecall.operation, initialRecall.operation);
 });
 
 test("OR expressions expand aliases while literal phrases, scope, and exact Chinese matching remain intact", async t => {
@@ -103,7 +117,7 @@ test("OR expressions expand aliases while literal phrases, scope, and exact Chin
   assert.deepEqual(result.diagnostics, []);
   assert.equal(f.projection.totals().recallOperations, 1);
   assert.equal(f.projection.totals().recallItems, 3);
-  assert.deepEqual(f.projection.recall(result.recallId!)!.operation.queries, result.queries);
+  assert.deepEqual((await f.projection.recall(result.recallId!))!.operation.queries, result.queries);
   const row = f.projection.recalls().items[0]!;
   assert.deepEqual(row.queries, result.queries);
   assert.equal("query" in row || "queriesJson" in row, false);
@@ -142,7 +156,7 @@ test("Recall keeps spaces, punctuation and short expressions literal, even along
   assertBudget(result);
   const normalized = await f.service.recall({ capabilityIds: [f.alpha], queries: [" Native Memories ", "native memories", "Native  Memories"] });
   assert.deepEqual(normalized.queries, ["Native Memories", "Native  Memories"]);
-  assert.deepEqual(f.projection.recall(normalized.recallId!)!.operation.queries, normalized.queries);
+  assert.deepEqual((await f.projection.recall(normalized.recallId!))!.operation.queries, normalized.queries);
   // The human library's existing word search is a separate contract.
   assert.ok((await f.search.listLibrary({ query: "Native Memories", workspace: "alpha" })).items.length > normalized.items.length);
 });

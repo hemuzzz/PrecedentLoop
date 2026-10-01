@@ -1,6 +1,7 @@
 import { isAbsolute, relative, resolve, win32 } from "node:path";
 
 import MarkdownIt from "markdown-it";
+import markdownItCjkFriendly from "markdown-it-cjk-friendly";
 
 import type { AssetDiffService } from "../asset/content-diff.js";
 import {
@@ -25,7 +26,7 @@ export interface AssetDetailDto {
   frontmatter: Awaited<ReturnType<AssetSearchService["readLibrary"]>>["frontmatter"];
   modifiedAt: string;
   rawMarkdown: string;
-  recentRecalls: ItemProjection[];
+  recentRecalls: Omit<ItemProjection, "assetTitle">[];
   recentUsage: UsageProjection[];
   relativePath: string;
   renderedMarkdown: string;
@@ -38,7 +39,7 @@ export interface AssetDetailDto {
 }
 
 export class HubAssetApplicationService {
-  readonly #renderer = new MarkdownIt({ html: false, linkify: false, typographer: false });
+  readonly #renderer = new MarkdownIt({ html: false, linkify: false, typographer: false }).use(markdownItCjkFriendly);
 
   constructor(
     readonly assetSearchService: Pick<AssetSearchService, "listLibrary" | "readLibrary">,
