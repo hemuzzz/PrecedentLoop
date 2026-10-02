@@ -38,6 +38,7 @@ export async function prepareFixture(resources: string, directory: string): Prom
     const {CandidateRepository}=await import(pathToFileURL(join(dist,'asset/candidate-repository.js')));
     const database=openDatabase(db);
     try { new CandidateRepository(database).write('fixture','accept','fixture',()=>new AssetRepository(database).insert({
+      retrievalTerms: [],
       assetId:'${assetId}',type:'MEMORY',scope:'WORKSPACE',workspace:'alpha',title:'桌面验收',summary:'桌面验收唯一词',bodyMarkdown:'# 桌面验收\\n\\n桌面验收唯一词。'
     })); } finally { database.close(); }
     const {handleCodexHook}=await import(pathToFileURL(join(dist,'hook/user-prompt-submit.js')));
