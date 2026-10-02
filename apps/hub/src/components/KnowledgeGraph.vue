@@ -46,7 +46,7 @@ const graph = computed(() => {
       const limit = limits.get(id) ?? 8;
       const children = open ? items.slice(0, limit).map(item => node({
         id: `${id}/${item.assetId}`, kind: "asset", icon: "document", tone: category.key,
-        label: item.pending && item.candidateId ? `候选 #${item.candidateId} · ${item.title}`
+        label: item.pending && item.number != null ? `候选 #${item.number} · ${item.title}`
           : !item.pending && item.knowledgeNumber != null ? `#${item.knowledgeNumber} · ${item.title}` : item.title,
         assetId: item.assetId, pending: item.pending,
       })) : [];

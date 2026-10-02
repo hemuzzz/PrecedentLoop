@@ -52,8 +52,7 @@ export class WorkspaceCapabilityService {
     const config = await this.config();
     const selected = new Set<string>();
     for (const id of [...new Set(parsed.data)].sort()) {
-      const row = this.repository.db.prepare<[string], { workspace: string; hash: string }>(
-        "SELECT workspace, trusted_workspace_mapping_hash AS hash FROM workspace_capability WHERE capability_key_hash=?").get(digest(id));
+      const row = this.repository.capability(digest(id));
       if (!row || (row.hash !== this.mappingHash(config, row.workspace)
         && row.hash !== this.mappingHash(config, row.workspace, true))) throw new KnowledgeError("CAPABILITY_INVALID");
       selected.add(row.workspace);
@@ -79,13 +78,9 @@ export class WorkspaceCapabilityService {
       aliases: [...new Set(workspace.aliases ?? [])],
       ...(workspace.description ? { description: workspace.description } : {}),
     }));
-    this.repository.db.transaction(() => {
-      const insert = this.repository.db.prepare("INSERT INTO workspace_capability VALUES (?,?,?,?)");
-      const createdAt = new Date().toISOString();
-      for (const capability of capabilities) {
-        insert.run(digest(capability.capabilityId), capability.workspace, createdAt, this.mappingHash(config, capability.workspace));
-      }
-    })();
+    this.repository.issueCapabilities(capabilities.map(capability => ({
+      digest: digest(capability.capabilityId), workspace: capability.workspace, hash: this.mappingHash(config, capability.workspace)!,
+    })));
     return { capabilities, omitted: ordered.length - workspaces.length };
   }
 }

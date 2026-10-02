@@ -8,7 +8,7 @@ import { appConfigSchema, backendEnvironment, dataPaths, executeFile, runtimeCon
 
 export type DirectoryInspection =
   | { kind: "MISSING" | "EMPTY" | "OTHER_NON_EMPTY" }
-  | { kind: "PRODUCT"; storageVersion: 1 }
+  | { kind: "PRODUCT"; storageVersion: 2 }
   | { kind: "PRODUCT_INCOMPLETE"; storageVersion?: 0 }
   | { kind: "PRODUCT_UNSUPPORTED"; storageVersion?: number; reason: string }
   | { kind: "NOT_WRITABLE"; reason: string };
@@ -70,9 +70,8 @@ async function inspectContents(path: string): Promise<DirectoryInspection> {
     const paths = dataPaths(path);
     const marker = join(path, markerName);
     const hasMarker = await exists(marker);
-    const assets = join(paths.assetRepositoryPath, "assets");
-    const hasLayout = await exists(assets) && (await stat(assets)).isDirectory() && await exists(paths.databasePath);
-    if (!hasMarker && !hasLayout) return { kind: "OTHER_NON_EMPTY" };
+    const hasLayout = hasMarker && await exists(paths.databasePath);
+    if (!hasMarker) return { kind: "OTHER_NON_EMPTY" };
     if (hasMarker) {
       // A damaged marker is evidence of product data, never an invitation to overwrite it.
       const content = await readFile(marker, "utf8");
@@ -81,14 +80,12 @@ async function inspectContents(path: string): Promise<DirectoryInspection> {
     }
     if (hasMarker && !await exists(paths.databasePath)) return { kind: "PRODUCT_INCOMPLETE" };
     if (hasMarker && await readStorageVersion(paths.databasePath) === 0) return { kind: "PRODUCT_INCOMPLETE", storageVersion: 0 };
-    if (!hasLayout) return { kind: "PRODUCT_UNSUPPORTED", reason: "知识仓库或主数据库缺失" };
-    await checkAccess(assets, true);
-    await checkAccess(paths.assetRepositoryPath, true);
+    if (!hasLayout) return { kind: "PRODUCT_UNSUPPORTED", reason: "主数据库缺失" };
     await checkAccess(dirname(paths.databasePath), true);
     await checkAccess(paths.databasePath, false);
     if (!(await stat(paths.databasePath)).isFile()) return { kind: "PRODUCT_UNSUPPORTED", reason: "主数据库不是普通文件" };
     const version = await readStorageVersion(paths.databasePath);
-    if (version === 1) return { kind: "PRODUCT", storageVersion: 1 };
+    if (version === 2) return { kind: "PRODUCT", storageVersion: 2 };
     return { kind: "PRODUCT_UNSUPPORTED", ...(version === undefined ? {} : { storageVersion: version }),
       reason: version === undefined ? "SQLite 文件头无效" : `不支持存储版本 ${version}` };
   } catch (error) { return { kind: "NOT_WRITABLE", reason: `无法读取或写入数据目录：${message(error)}` }; }
@@ -141,7 +138,7 @@ async function initializeWithRuntime(path: string, runtime: string): Promise<voi
       cwd: path, env: backendEnvironment(config), timeout: 120000, maxBuffer: 1024 * 1024,
     });
     step = "核对存储版本";
-    if (await readStorageVersion(config.databasePath) !== 1) throw new Error("存储未到达基线版本 1");
+    if (await readStorageVersion(config.databasePath) !== 2) throw new Error("存储未到达基线版本 2");
   } catch (error) { throw new DataDirectoryError(step, error); }
 }
 
@@ -157,12 +154,6 @@ export async function prepareDirectoryLayout(path: string, options: DirectoryWri
       if (!(await readdir(path)).every(name => name === ".DS_Store")) throw new Error("数据目录已不再为空");
       // Establish identity before any other write, so an interrupted initialization can resume.
       await writeMarker(path);
-    }
-    for (const branch of ["assets", "inbox"]) {
-      for (const type of ["memories", "documents", "skills"]) {
-        const target = join(path, "repository", branch, "global", type);
-        if (!await exists(target)) await mkdir(target, { recursive: true });
-      }
     }
     for (const directory of ["runtime", "config", "logs"]) if (!await exists(join(path, directory))) await mkdir(join(path, directory), { recursive: true });
     step = "写入工作区配置";
@@ -211,14 +202,4 @@ export async function copyDataDirectory(source: string, target: string): Promise
     await walk(source, target);
   } catch (error) { throw new DataDirectoryError("复制并校验数据", error); }
   return { files, bytes };
-}
-/** The copied coordination file still names the source database; point it at the copy. */
-export async function rebindCoordination(path: string, runtime: string): Promise<void> {
-  try {
-    const node = await verifyBundledNode(runtime);
-    const config = runtimeConfig(appConfigSchema.parse({ configVersion: 1, setupVersion: 1, setupCompleted: false, dataDirectory: path }));
-    await executeFile(node, [await realpath(join(runtime, "apps/server/dist/maintenance-cli.js")), "rebind-coordination", "--offline"], {
-      cwd: path, env: backendEnvironment(config), timeout: 120000, maxBuffer: 1024 * 1024,
-    });
-  } catch (error) { throw new DataDirectoryError("修正协调库绑定", error); }
 }

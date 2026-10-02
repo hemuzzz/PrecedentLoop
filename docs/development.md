@@ -17,32 +17,34 @@ pnpm install --frozen-lockfile
 
 | Path | Contents |
 |---|---|
-| `apps/server` | Knowledge runtime: scanning and indexing, recall, candidates, HTTP/REST, MCP server, hooks, maintenance CLIs |
+| `apps/server` | Knowledge runtime: SQLite repositories and FTS, recall, candidates, HTTP/REST, MCP server, hooks, maintenance CLIs |
 | `apps/hub` | Vue UI: knowledge browser, candidate review, setup wizard and settings |
 | `apps/desktop` | Electron shell: setup and recovery, agent integration, data folder management, packaging and updates |
 | `packages/id-generator` | Shared ID generation and validation |
 
 ## Dev mode
 
-The server needs a knowledge repository, a database path and a workspaces file, all as absolute paths. The repository folder and the workspaces file must exist. Use a scratch folder, not your real data:
+The server needs absolute paths for a version 2 database and an existing workspaces file. Initialize a new database in a scratch folder:
 
 ```bash
-mkdir -p /absolute/scratch/{repository/assets,repository/inbox,runtime,config,logs}
+mkdir -p /absolute/scratch/{runtime,config,logs}
 echo '{"schemaVersion":1,"workspaces":[]}' > /absolute/scratch/config/workspaces.json
 
-export PRECEDENT_LOOP_ASSET_REPOSITORY_PATH='/absolute/scratch/repository'
 export PRECEDENT_LOOP_DATABASE_PATH='/absolute/scratch/runtime/precedent-loop.sqlite'
 export PRECEDENT_LOOP_WORKSPACES_PATH='/absolute/scratch/config/workspaces.json'
 export PRECEDENT_LOOP_LOG_PATH='/absolute/scratch/logs/server.log'
 export PORT='3000'
 
-# Initialize baseline version 1 once in an empty database; existing databases are refused.
+# Initialize baseline version 2 once in an empty database; existing schemas or data are refused.
 # The maintenance CLI runs from the build output.
+pnpm --filter @precedent-loop/id-generator build
 pnpm --filter @precedent-loop/server build
 pnpm --filter @precedent-loop/server init-database --offline
 
 pnpm --filter @precedent-loop/server dev
 ```
+
+All DDL lives in `apps/server/src/storage/schema.sql`. `schema.ts` reads that file, and the server build copies it to `dist/storage/schema.sql` alongside the compiled module. Startup checks the baseline and required tables; it does not create or upgrade storage. The initialization command creates the database only; desktop data-folder recognition additionally requires the marker created by Setup, as described in [Configuration](configuration.md#data-folder).
 
 In a second terminal, start the Hub. Vite proxies `/api` to the server port:
 
@@ -71,14 +73,18 @@ Stop with `Ctrl-C`. The server finishes in-flight work, stops any AI process it 
 ## Tests and checks
 
 ```bash
-pnpm build        # once after a fresh install: other packages type-check against the built id-generator
-pnpm typecheck
-pnpm test
+pnpm --filter @precedent-loop/id-generator build
+pnpm --filter @precedent-loop/id-generator test
+pnpm --filter @precedent-loop/server typecheck
+pnpm --filter @precedent-loop/server test
+pnpm --filter @precedent-loop/server build
+pnpm --filter @precedent-loop/desktop typecheck
+pnpm --filter @precedent-loop/desktop test
 ```
 
-`pnpm test` runs the automated tests of `apps/server`, `apps/desktop` and `packages/id-generator`. The Hub (`apps/hub`) has no automated tests; UI changes are checked by hand in the browser and the desktop app.
+Server, desktop and shared-package checks use isolated fixtures. Hub UI changes are accepted manually by the user; agents do not run Hub tests, type checks, builds or browser checks as UI validation.
 
-Smoke tests that exercise built artifacts live in each package's `package.json` (`smoke:*` scripts) and expect `pnpm build` first. Tests use temporary folders and never touch your real data or `~/Library/Application Support`.
+Smoke tests that exercise built artifacts live in each package's `package.json` (`smoke:*` scripts). Build the affected package first. Server smokes that serve Hub assets also require an existing Hub `dist`; they check HTTP delivery, not UI acceptance. Tests use temporary folders and never touch your real data or `~/Library/Application Support`.
 
 ## Building the app
 
@@ -100,14 +106,15 @@ The bundled runtime is Electron's own Node (`ELECTRON_RUN_AS_NODE`), so the Elec
 
 - TypeScript in `strict` mode, ES modules, `.js` extensions in relative imports, explicit `import type`. Don't loosen compiler settings or use `any` to get around errors.
 - Validate input with the existing Zod schemas.
-- Generate and validate IDs only through `@precedent-loop/id-generator` (`ast`, `tsk`, `usg` prefixes followed by digits).
-- Keep SQL and persistence in repositories/catalogs and use-case logic in services. HTTP, MCP and hook entry points validate input, call the shared service and map errors — they don't duplicate business rules.
+- Generate and validate IDs only through `@precedent-loop/id-generator` (`ast`, `tsk`, `usg`, `cnd` prefixes followed by digits).
+- Put DDL in `storage/schema.sql`, query SQL in `storage/` or `*-repository.ts`, and use-case logic in services. HTTP, MCP and hook entry points validate input, call the shared service and map errors. See [Persistence rules](../工程约定/数据持久化约定.md).
+- SQLite holds the original knowledge and candidates. Content writes use short transactions, version checks and receipts; acceptance updates FTS in the same transaction. Knowledge deletion is logical, and all current-content reads filter deleted rows. There is no restore entry point.
 - Errors use the module's error type and `code`; each entry point maps them. Never return internal stack traces to clients.
 - The Hub talks to the server only through `apps/hub/src/api/client.ts` with the types in `api/types.ts`.
 
 ## Pull requests
 
 - Keep changes focused: no unrelated refactors, formatting sweeps or dependency upgrades.
-- Add or update tests for server, desktop and shared-package behaviour changes, and make sure `pnpm typecheck` and `pnpm test` pass. For Hub changes, describe what you checked by hand.
+- Add or update tests for server, desktop and shared-package behaviour changes, and run the corresponding package checks above. For Hub changes, list the behaviour the user needs to accept manually.
 - Changes that affect storage, MCP tool contracts or installed integrations need a note on compatibility and migration.
 - For larger changes, open an issue first to agree on the approach.

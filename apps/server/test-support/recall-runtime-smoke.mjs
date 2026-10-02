@@ -15,21 +15,24 @@ const { startPrecedentLoopServer } = await import(pathToFileURL(join(dist, "runt
 const { initializeDatabase } = await import(pathToFileURL(join(dist, "storage/schema.js")).href);
 const { handleCodexHook } = await import(pathToFileURL(join(dist, "hook/user-prompt-submit.js")).href);
 const directory = await mkdtemp(join(tmpdir(), "codex-recall-runtime-"));
-const repositoryPath = join(directory, "repository");
 const databasePath = join(directory, "knowledge.sqlite");
 const workspaceConfigPath = join(directory, "workspaces.json");
 const assetId = "ast2034512345678901248";
 let runtime;
 const client = new Client({ name: "recall-runtime-smoke", version: "1" });
 try {
-  await mkdir(join(repositoryPath, "assets/workspaces/alpha/memories"), { recursive: true });
   await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1,
     workspaces: [{ name: "alpha", paths: [directory], aliases: ["测试项目"], description: "隔离验证" }] }));
-  await writeFile(join(repositoryPath, `assets/workspaces/alpha/memories/${assetId}.md`),
-    `---\nid: ${assetId}\ntype: MEMORY\nscope: WORKSPACE\nworkspace: alpha\ntitle: 业务字典\nsummary: 字典配置位于 DictConfig。\n---\n\n# 业务字典\n\n隔离构建验收正文。Native Memories 与 KNOWLEDGE.md。\n`);
-  await writeFile(join(repositoryPath, "assets/workspaces/alpha/memories/ast2034512345678901249.md"),
-    "---\nid: ast2034512345678901249\ntype: MEMORY\nscope: WORKSPACE\nworkspace: alpha\ntitle: Native tooling and unrelated Memories\nsummary: KNOWLEDGEXmd\n---\n干扰样本。\n");
   initializeDatabase(databasePath);
+  const { openDatabase } = await import(pathToFileURL(join(dist, "storage/schema.js")).href);
+  const { AssetRepository } = await import(pathToFileURL(join(dist, "asset/asset-repository.js")).href);
+  const { CandidateRepository } = await import(pathToFileURL(join(dist, "asset/candidate-repository.js")).href);
+  const db = openDatabase(databasePath);
+  try { const assets = new AssetRepository(db); new CandidateRepository(db).write("seed", "accept", "fixture", () => {
+    assets.insert({ assetId, type: "MEMORY", scope: "WORKSPACE", workspace: "alpha", title: "业务字典", summary: "字典配置位于 DictConfig。", bodyMarkdown: "# 业务字典\n\n隔离构建验收正文。Native Memories 与 KNOWLEDGE.md。" });
+    assets.insert({ assetId: "ast2034512345678901249", type: "MEMORY", scope: "WORKSPACE", workspace: "alpha", title: "Native tooling and unrelated Memories", summary: "KNOWLEDGEXmd", bodyMarkdown: "干扰样本。" });
+    return {};
+  }); } finally { db.close(); }
   const context = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: directory },
     { databasePath, workspaceConfigPath });
   const additionalContext = JSON.parse(context).hookSpecificOutput.additionalContext;
@@ -38,7 +41,7 @@ try {
   await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
   const availablePort = probe.address().port;
   await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
-  runtime = await startPrecedentLoopServer({ assetRepositoryPath: repositoryPath, databasePath,
+  runtime = await startPrecedentLoopServer({ databasePath,
     workspaceConfigPath, logPath: join(directory, "runtime.log"), port: availablePort });
   const port = runtime.server.address().port;
   const base = `http://127.0.0.1:${port}`;
@@ -52,7 +55,7 @@ try {
   assert.equal((await get("/api/system/status")).service.readiness, "READY");
   await client.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp")));
   const tools = (await client.listTools()).tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ["asset_mark_used", "asset_read", "knowledge_recall"]);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ["asset_mark_used", "asset_read", "candidate_prepare", "candidate_update", "knowledge_recall"]);
   const removedInput = await client.callTool({ name: "knowledge_recall", arguments:
     { capabilityIds: [capability], queries: ["业务字典"], scenarios: [] } });
   assert.equal(removedInput.isError, true);

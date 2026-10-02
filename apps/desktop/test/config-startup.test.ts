@@ -21,7 +21,7 @@ test("build configuration strips legacy fields while app configuration is strict
     { ...draft, setupCompleted: "true" }, { ...draft, dataDirectory: "relative" }, { ...draft, port: 65536 },
     { ...draft, startupTimeoutMs: 0 }, { ...draft, shutdownTimeoutMs: -1 }, { ...draft, nodePath: "/external/node" },
     { ...draft, extra: true }, { ...draft, setupVersion: undefined }]) assert.equal(appConfigSchema.safeParse(value).success, false);
-  assert.deepEqual(dataPaths(config.dataDirectory), { assetRepositoryPath: "/temporary/data/repository",
+  assert.deepEqual(dataPaths(config.dataDirectory), {
     databasePath: "/temporary/data/runtime/precedent-loop.sqlite", workspaceConfigPath: "/temporary/data/config/workspaces.json",
     logPath: "/temporary/data/logs/server.log", desktopLogPath: "/temporary/data/logs/desktop.log" });
 });
@@ -92,10 +92,10 @@ test("startup classifies every directory outcome before starting a backend", () 
   assert.equal(invalid.mode, "RECOVERY");
   assert.ok(invalid.mode !== "NORMAL" && invalid.code === "CONFIG_INVALID" && invalid.reason.includes("坏 JSON"));
   const config = appConfigSchema.parse(draft);
-  assert.equal(determineStartupMode({ kind: "VALID", config }, { kind: "PRODUCT", storageVersion: 1 }).mode, "SETUP");
+  assert.equal(determineStartupMode({ kind: "VALID", config }, { kind: "PRODUCT", storageVersion: 2 }).mode, "SETUP");
   assert.equal(determineStartupMode({ kind: "VALID", config }, { kind: "MISSING" }).mode, "SETUP");
   const complete = { kind: "VALID" as const, config: { ...config, setupCompleted: true } };
-  assert.deepEqual(determineStartupMode(complete, { kind: "PRODUCT", storageVersion: 1 }), { mode: "NORMAL", dataDirectory: config.dataDirectory });
+  assert.deepEqual(determineStartupMode(complete, { kind: "PRODUCT", storageVersion: 2 }), { mode: "NORMAL", dataDirectory: config.dataDirectory });
   const cases: Array<[DataDirectoryInspection | undefined, string]> = [
     [{ kind: "MISSING" }, "DATA_MISSING"], [{ kind: "EMPTY" }, "DATA_NOT_PRODUCT"], [{ kind: "OTHER_NON_EMPTY" }, "DATA_NOT_PRODUCT"],
     [{ kind: "NOT_WRITABLE", reason: "无权限" }, "DATA_INACCESSIBLE"],
@@ -109,7 +109,7 @@ test("startup classifies every directory outcome before starting a backend", () 
     assert.ok(mode.mode !== "NORMAL" && mode.code === code && mode.reason.length > 0);
     assert.equal(mode.dataDirectory, config.dataDirectory);
   }
-  assert.equal(determineStartupMode(complete, { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 1 } }).mode, "NORMAL");
+  assert.equal(determineStartupMode(complete, { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 2 } }).mode, "NORMAL");
   const failure = backendFailureMode(config.dataDirectory, new Error("端口被占用"), "/temporary/desktop.log");
   assert.equal(failure.mode, "RECOVERY");
   assert.ok(failure.mode !== "NORMAL" && failure.code === "BACKEND_FAILED");

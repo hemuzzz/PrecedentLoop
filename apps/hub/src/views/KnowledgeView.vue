@@ -201,7 +201,7 @@ watch(route, refresh); onActivated(refresh); onBeforeUnmount(() => controller?.a
             <p>字符 {{ detail.operation.budget.modelVisibleCharacters }} / {{ detail.operation.budget.maxModelVisibleCharacters }}（知识 {{ detail.operation.budget.knowledgeContentCharacters }}，元数据 {{ detail.operation.budget.metadataCharacters }}）</p>
             <p>知识条数上限 {{ detail.operation.budget.maxAssets }} · 未附摘要 {{ detail.operation.budget.downgradedCount }} 条</p>
             <p>召回 ID：<code>{{ detail.operation.recallId }}</code></p>
-            <div v-for="item in detail.items" :key="item.recallItemId" class="recall-evidence"><p>资产 ID：<code>{{ item.assetId }}</code></p><p>条目 ID：<code>{{ item.recallItemId }}</code></p><p>内容 Hash：<code>{{ item.contentHash }}</code></p></div>
+            <div v-for="item in detail.items" :key="item.recallItemId" class="recall-evidence"><p>资产 ID：<code>{{ item.assetId }}</code></p><p>条目 ID：<code>{{ item.recallItemId }}</code></p><p>内容版本：<code>{{ item.version }}</code></p></div>
           </details>
         </template>
         <template v-else-if="recallList">

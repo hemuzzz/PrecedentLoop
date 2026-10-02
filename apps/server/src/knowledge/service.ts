@@ -12,11 +12,8 @@ interface Candidate { item: RecallItem; summary: string; upgrade: boolean }
 export class KnowledgeService {
   readonly ids = new SnowflakeIdGenerator();
   constructor(readonly repository: KnowledgeRepository, readonly capabilities: WorkspaceCapabilityService,
-    readonly search: AssetSearchService, readonly assertReady: () => void, readonly logger?: StructuredLogger) {}
+    readonly search: AssetSearchService, readonly logger?: StructuredLogger) {}
   async recall(input: unknown): Promise<RecallResult> {
-    return this.search.snapshot(() => this.recallSnapshot(input));
-  }
-  private async recallSnapshot(input: unknown): Promise<RecallResult> {
     const parsed = recallInputSchema.safeParse(input);
     if (!parsed.success) throw new KnowledgeError("INPUT_INVALID");
     // Deduplicate case and surrounding whitespace only. Internal spaces remain
@@ -28,12 +25,12 @@ export class KnowledgeService {
     }
     const queries = [...expressions.values()];
     const { authorizedWorkspaces, config } = await this.capabilities.select(parsed.data.capabilityIds);
-    this.assertReady();
     const diagnostics: string[] = [];
     const context = { authorizedWorkspaces, workspaceConfigSnapshot: config };
+    const result = this.search.readTransaction(() => {
     const ranks = new Map<string, RankedSearchItem>();
     for (const query of queries) {
-      for (const rank of await this.search.rankedCandidates(context, query)) {
+      for (const rank of this.search.rankedCandidates(context, query)) {
         const prior = ranks.get(rank.assetId);
         if (!prior || compareRankedItems(rank, prior) < 0) ranks.set(rank.assetId, rank);
       }
@@ -43,16 +40,15 @@ export class KnowledgeService {
     for (const rank of [...ranks.values()].sort(compareRankedItems)) {
       const assetId = rank.assetId;
       try {
-        const asset = await this.search.read({ assetId, context });
-        // Sources must describe the same validated bytes; changed candidates are omitted.
-        if (rank.item.contentHash !== asset.contentHash) { invalid++; continue; }
-        const { frontmatter } = asset;
-        const item: RecallItem = { recallItemId: this.ids.next("usg"), assetId, contentHash: asset.contentHash,
-          assetScope: frontmatter.scope, assetWorkspace: frontmatter.scope === "WORKSPACE" ? frontmatter.workspace : null,
-          title: frontmatter.title, type: frontmatter.type, deliveredMode: "ON_DEMAND",
+        const asset = this.search.read({ assetId, context });
+        // Sources must describe the same content version.
+        if (rank.item.version !== asset.version) { invalid++; continue; }
+        const item: RecallItem = { recallItemId: this.ids.next("usg"), assetId, version: asset.version,
+          assetScope: asset.scope, assetWorkspace: asset.scope === "WORKSPACE" ? asset.workspace : null,
+          title: asset.title, type: asset.type, deliveredMode: "ON_DEMAND",
           deliveryReasons: [], reference: "asset_read: recallItemId + same capabilityIds" };
-        candidates.push({ item, summary: frontmatter.summary,
-          upgrade: frontmatter.type === "MEMORY" && rank.item.score >= 300 });
+        candidates.push({ item, summary: asset.summary,
+          upgrade: asset.type === "MEMORY" && rank.item.score >= 300 });
       } catch (error) {
         if (error instanceof AssetNotAccessibleError || error instanceof AssetNotFoundError) invalid++;
         else throw error;
@@ -90,6 +86,8 @@ export class KnowledgeService {
     if (result.items.some((i) => i.deliveryReasons.includes("BUDGET_DOWNGRADED"))) result.diagnostics.push("BUDGET_DOWNGRADED");
     if (!fits(result)) throw new KnowledgeError("RESPONSE_BUDGET_EXCEEDED");
     measure(result);
+    return result;
+    });
     try { this.repository.recordRecall(result); }
     catch (error) {
       if (!(error instanceof KnowledgeError) || error.code !== "USAGE_WRITE_FAILED") throw error;
@@ -99,25 +97,27 @@ export class KnowledgeService {
     return result;
   }
   async read(input: unknown) {
-    return this.search.snapshot(() => this.readSnapshot(input));
-  }
-  private async readSnapshot(input: unknown) {
     const parsed = readInputSchema.safeParse(input);
     if (!parsed.success) throw new KnowledgeError("INPUT_INVALID");
-    const { authorizedWorkspaces, config } = await this.capabilities.select(parsed.data.capabilityIds);
-    this.assertReady();
+    const { authorizedWorkspaces } = await this.capabilities.select(parsed.data.capabilityIds);
+    const { source, asset } = this.repository.readTransaction(assets => {
     const source = "recallItemId" in parsed.data ? this.repository.item(parsed.data.recallItemId) : undefined;
     if ("recallItemId" in parsed.data && !source) throw new KnowledgeError("SOURCE_NOT_FOUND");
     if (source) assertScope(source, authorizedWorkspaces);
     const assetId = source?.assetId ?? ("assetId" in parsed.data ? parsed.data.assetId : "");
-    const asset = await this.search.read({ assetId, context: { authorizedWorkspaces, workspaceConfigSnapshot: config } });
-    const expected = source?.contentHash ?? ("expectedContentHash" in parsed.data ? parsed.data.expectedContentHash : undefined);
-    if (expected && asset.contentHash !== expected) throw new KnowledgeError("CONTENT_CHANGED");
-    if (Buffer.byteLength(asset.markdown, "utf8") > 256_000) throw new KnowledgeError("READ_SIZE_EXCEEDED");
-    const fact = { readRef: this.ids.next("usg"), authorizedWorkspaces, assetId, contentHash: asset.contentHash,
-      assetScope: asset.frontmatter.scope, assetWorkspace: asset.frontmatter.scope === "WORKSPACE" ? asset.frontmatter.workspace : null,
+    const asset = assets.get(assetId);
+    if (!asset) throw new AssetNotFoundError(assetId);
+    if (asset.scope === "WORKSPACE" && !authorizedWorkspaces.includes(asset.workspace!)) throw new AssetNotAccessibleError(assetId);
+    return { source, asset };
+    });
+    const assetId = asset.assetId;
+    const expected = source?.version ?? ("expectedVersion" in parsed.data ? parsed.data.expectedVersion : undefined);
+    if (expected !== undefined && asset.version !== expected) throw new KnowledgeError("CONTENT_CHANGED");
+    if (Buffer.byteLength(asset.bodyMarkdown, "utf8") > 256_000) throw new KnowledgeError("READ_SIZE_EXCEEDED");
+    const fact = { readRef: this.ids.next("usg"), authorizedWorkspaces, assetId, version: asset.version,
+      assetScope: asset.scope, assetWorkspace: asset.scope === "WORKSPACE" ? asset.workspace : null,
       recallItemId: source?.recallItemId ?? null, occurredAt: new Date().toISOString() };
-    const response = { ...fact, markdown: asset.markdown, usageRecorded: true, readRef: fact.readRef as string | null, diagnostics: [] as string[] };
+    const response = { ...fact, type: asset.type, title: asset.title, summary: asset.summary, markdown: asset.bodyMarkdown, usageRecorded: true, readRef: fact.readRef as string | null, diagnostics: [] as string[] };
     // Single-target response deliberately omits the parent operation and its scopes/query.
     try { this.repository.recordRead(fact); }
     catch (error) {
@@ -128,17 +128,13 @@ export class KnowledgeService {
     return response;
   }
   async used(input: unknown) {
-    return this.search.snapshot(() => this.usedSnapshot(input));
-  }
-  private async usedSnapshot(input: unknown) {
     const parsed = usedInputSchema.safeParse(input);
     if (!parsed.success) throw new KnowledgeError("INPUT_INVALID");
     const { authorizedWorkspaces, config } = await this.capabilities.select(parsed.data.capabilityIds);
-    this.assertReady();
     const source = "recallItemId" in parsed.data ? this.repository.item(parsed.data.recallItemId) : this.repository.readFact(parsed.data.readRef);
     if (!source) throw new KnowledgeError("SOURCE_NOT_FOUND");
     assertScope(source, authorizedWorkspaces);
-    await this.search.read({ assetId: source.assetId, context: { authorizedWorkspaces, workspaceConfigSnapshot: config } });
+    this.search.read({ assetId: source.assetId, context: { authorizedWorkspaces, workspaceConfigSnapshot: config } });
     const recallItemId = source.recallItemId;
     try {
       return this.repository.recordUsed({ usedId: this.ids.next("usg"), authorizedWorkspaces, assetId: source.assetId,
@@ -173,7 +169,7 @@ function measure(result: RecallResult): number {
 function degraded(result: RecallResult): RecallResult {
   const response = structuredClone(result);
   response.usageRecorded = false; response.recallId = null;
-  response.items.forEach((item) => { item.recallItemId = null; item.reference = "asset_read: assetId + expectedContentHash=contentHash + same capabilityIds"; });
+  response.items.forEach((item) => { item.recallItemId = null; item.reference = "asset_read: assetId + expectedVersion=version + same capabilityIds"; });
   response.diagnostics.push("USAGE_WRITE_FAILED");
   measure(response);
   return response;

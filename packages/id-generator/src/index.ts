@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { generateId as generateSnowflakeId, type SnowflakeOptions } from "snowflake.io";
 
-export const ID_PREFIXES = ["ast", "tsk", "usg"] as const;
+export const ID_PREFIXES = ["ast", "tsk", "usg", "cnd"] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 
@@ -10,7 +10,7 @@ export interface IdGenerator {
   validate(id: string, expectedPrefix?: IdPrefix): boolean;
 }
 
-const ID_PATTERN = /^(ast|tsk|usg)[0-9]+$/;
+const ID_PATTERN = /^(ast|tsk|usg|cnd)[0-9]+$/;
 
 const SNOWFLAKE_OPTIONS = {
   clockSkewHandler: "throw",

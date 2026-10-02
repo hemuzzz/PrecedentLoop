@@ -22,21 +22,24 @@ export async function allocatePort(): Promise<number> {
 export async function prepareFixture(resources: string, directory: string): Promise<{ config: RuntimeConfig; capability: string; assetId: string }> {
   const runtime = join(resources, "runtime");
   await initializeDataDirectory(directory, runtime);
-  assert.deepEqual(await inspectDataDirectory(directory), { kind: "PRODUCT", storageVersion: 1 });
+  assert.deepEqual(await inspectDataDirectory(directory), { kind: "PRODUCT", storageVersion: 2 });
   const nodePath = await verifyBundledNode(runtime);
-  const repository = join(directory, "repository");
   const config = runtimeConfig(appConfigSchema.parse({ configVersion: 1, setupVersion: 1, setupCompleted: true,
     dataDirectory: directory, port: await allocatePort() }));
   const assetId = "ast2034512345678901248";
-  await mkdir(join(repository, "assets/workspaces/alpha/memories"), { recursive: true });
   await writeFile(config.workspaceConfigPath, JSON.stringify({ schemaVersion: 1,
     workspaces: [{ name: "alpha", paths: [directory] }] }));
-  await writeFile(join(repository, `assets/workspaces/alpha/memories/${assetId}.md`),
-    `---\nid: ${assetId}\ntype: MEMORY\nscope: WORKSPACE\nworkspace: alpha\ntitle: 桌面验收\nsummary: 桌面验收唯一词\n---\n\n# 桌面验收\n\n桌面验收唯一词。\n`);
   // Execute the packaged ordinary-Node code only against this newly-created fixture.
   const { stdout } = await executeFile(nodePath, ["--input-type=module", "-e", `
     import {pathToFileURL} from 'node:url'; import {join} from 'node:path';
     const [dist,db,config,cwd]=process.argv.slice(1);
+    const {openDatabase}=await import(pathToFileURL(join(dist,'storage/schema.js')));
+    const {AssetRepository}=await import(pathToFileURL(join(dist,'asset/asset-repository.js')));
+    const {CandidateRepository}=await import(pathToFileURL(join(dist,'asset/candidate-repository.js')));
+    const database=openDatabase(db);
+    try { new CandidateRepository(database).write('fixture','accept','fixture',()=>new AssetRepository(database).insert({
+      assetId:'${assetId}',type:'MEMORY',scope:'WORKSPACE',workspace:'alpha',title:'桌面验收',summary:'桌面验收唯一词',bodyMarkdown:'# 桌面验收\\n\\n桌面验收唯一词。'
+    })); } finally { database.close(); }
     const {handleCodexHook}=await import(pathToFileURL(join(dist,'hook/user-prompt-submit.js')));
     const output=JSON.parse(await handleCodexHook({hook_event_name:'UserPromptSubmit',cwd},{databasePath:db,workspaceConfigPath:config}));
     const capabilityLine=output.hookSpecificOutput.additionalContext.split('Precedent Loop WorkspaceCapability\\n')[1]?.split('\\n')[0];
@@ -98,7 +101,7 @@ export async function verifyPackagedService(resources: string): Promise<void> {
     }));
     await backend.stop();
     await closed;
-    process.stdout.write(JSON.stringify({ isolatedService: "PASS", buildId: build.buildId, checks: ["initialize-baseline-1", "IPC", "readiness", "Hub", "Recall/Read/Used", "Origin", "shutdown"] }) + "\n");
+    process.stdout.write(JSON.stringify({ isolatedService: "PASS", buildId: build.buildId, checks: ["initialize-baseline-2", "IPC", "readiness", "Hub", "Recall/Read/Used", "Origin", "shutdown"] }) + "\n");
   } finally {
     await backend?.stop();
     await rm(directory, { recursive: true, force: true });

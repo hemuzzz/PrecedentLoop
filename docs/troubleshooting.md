@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with **System status (系统状态)** in the Hub: it shows whether the index is ready and lists any files or settings that could not be used. Logs are in `<data folder>/logs/` (`server.log`, `desktop.log`).
+Start with **System status (系统状态)** in the Hub: it shows service readiness, the database baseline and workspace configuration. Logs are in `<data folder>/logs/` (`server.log`, `desktop.log`).
 
 ## The app won't open
 
@@ -25,27 +25,44 @@ If the agent reports `CAPABILITY_UNAVAILABLE`, the project-recognition hook coul
 
 ## Knowledge is missing from recall
 
-- **It is still a candidate.** Only accepted knowledge in `assets/` is searchable.
-- **The file was skipped.** Invalid front matter, a scope or project that does not match the folder, a duplicate `id`, a symlink, or a project that is not registered. System status lists each skipped file with the reason. See [Knowledge format](knowledge-format.md#file-format).
+- **It is still a candidate.** Only accepted knowledge in the `asset` table is searchable.
+- **It was deleted.** Deleted knowledge is filtered from recall, reads, Hub lists, overview, Used and related-knowledge validation. Deletion preserves historical operation records; there is no restore action.
+- **Its workspace is no longer registered.** Check `config/workspaces.json` and the projects selected for the request.
 - **The agent searched the wrong project.** Recall only covers the projects the agent chose. Adding aliases and a description in `workspaces.json` helps it pick correctly.
 - **The query did not match.** Queries are literal substrings. Exact names — file names, symbols, domain terms — work best.
 
-## Index needs rebuilding
+## Storage cannot be opened
 
-**`DEGRADED`** — the last consistent index may still be in place, but search and reads refuse anything that cannot be re-validated against the current files. Fix the cause shown in System status; the index catches up automatically, or after a restart.
+The current baseline is **2**. `DATABASE_VERSION_UNSUPPORTED` means the database has a different version; `DATABASE_SCHEMA_INVALID` means the database or a required table is missing. Do not change `user_version` by hand or initialize over an existing database. Startup and app updates do not repair or upgrade schemas.
 
-**`REBUILD_REQUIRED`** — the search index must be rebuilt. Quit the app and make sure nothing else uses the database, then run from a source checkout:
+The desktop app recognizes existing data by its valid `.precedentloop.json` marker and version 2 database. A folder containing only a marker or a version 0 database is incomplete; use Setup's explicit initialization for a new, empty database. See [Configuration](configuration.md#data-folder) for recognition rules.
+
+## Full-text index needs rebuilding
+
+Acceptance maintains `asset_fts` in the same transaction as the original content. If the FTS rows are inconsistent, quit the app, stop other database users and back up the data folder before maintenance. Use SQLite with FTS5 trigram support and open the existing database in read/write mode:
 
 ```bash
-PRECEDENT_LOOP_ASSET_REPOSITORY_PATH='/absolute/path/to/data/repository' \
-PRECEDENT_LOOP_DATABASE_PATH='/absolute/path/to/data/runtime/precedent-loop.sqlite' \
-PRECEDENT_LOOP_WORKSPACES_PATH='/absolute/path/to/data/config/workspaces.json' \
-pnpm --filter @precedent-loop/server rebuild-index --offline
+sqlite3 'file:/absolute/path/to/data/runtime/precedent-loop.sqlite?mode=rw' <<'SQL'
+.bail on
+BEGIN IMMEDIATE;
+DELETE FROM asset_fts;
+INSERT INTO asset_fts (asset_id, title, summary, body_markdown)
+SELECT asset_id, title, summary, body_markdown
+FROM asset WHERE is_deleted = 0;
+INSERT INTO asset_fts(asset_fts) VALUES('integrity-check');
+COMMIT;
+SQL
 ```
 
-`--offline` is your confirmation that nothing else is writing. The command rebuilds only the search index in a single transaction and keeps version history, usage records and capabilities. On failure it rolls back. Start the app again afterwards.
+This recreates the searchable rows from the original `asset` content. It preserves knowledge, previous content, candidates, numbering and operation records. A failure exits before commit and rolls the transaction back. Restart the app after the check succeeds.
 
-Do not move or delete the database to "reset" the index. Losing the database loses version history and usage records, which cannot be rebuilt from the Markdown files.
+The database is the sole original. Deleting it loses knowledge as well as candidates and history; initialization cannot recover them. Index maintenance does not restore logically deleted knowledge.
+
+## A write is blocked
+
+- **`VERSION_CONFLICT`** — the candidate or formal knowledge changed after it was read. Read the latest version and review again.
+- **`REVISION_BLOCKED`** — the knowledge already has a pending or deferred candidate. Merge same-topic changes into that candidate, or accept/reject it before preparing another revision. The blocked attempt writes no content or receipt.
+- **`ASSET_HAS_OPEN_CANDIDATE`** — knowledge deletion is blocked by a pending or deferred candidate. Accept or reject that candidate first.
 
 ## Building from source fails
 

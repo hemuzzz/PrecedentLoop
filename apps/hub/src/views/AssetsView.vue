@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import MarkdownIt from "markdown-it";
+import markdownItCjkFriendly from "markdown-it-cjk-friendly";
 import { markdownPresentation } from "../markdown-presentation.js";
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 
@@ -8,7 +10,6 @@ import type {
   AssetLibraryItem,
   AssetListFilters,
   AssetType,
-  InboxDiagnostic,
   InboxItem,
 } from "../api/types.js";
 import UiIcon from "../components/UiIcon.vue";
@@ -30,6 +31,21 @@ type DetailTab = "RENDERED" | "RAW" | "INFO";
 type ViewContext = "ASSET_LIST" | "ASSET_DETAIL" | "INBOX";
 
 const api = new HubApiClient();
+const renderer = new MarkdownIt({ html: false, linkify: false, typographer: false }).use(markdownItCjkFriendly);
+const deleting = ref(false);
+const deleteError = ref("");
+async function deleteAsset() {
+  const asset = assetDetail.value;
+  if (!asset || deleting.value || !window.confirm(`删除《${asset.title}》？删除后将不再召回或显示此知识。`)) return;
+  deleting.value = true; deleteError.value = "";
+  try { await api.deleteAsset(asset.assetId, crypto.randomUUID()); closePreview(); refreshAssets(); }
+  catch (error) {
+    deleteError.value = error instanceof HubApiError && error.code === "ASSET_HAS_OPEN_CANDIDATE"
+      ? "请先在候选页接受或拒绝该知识的待审／暂存候选，再删除知识。"
+      : error instanceof Error ? error.message : "删除失败";
+  }
+  finally { deleting.value = false; }
+}
 const route = useRoute();
 const activeView = computed(() =>
   route.value.page === "inbox" ? "INBOX" : "LIBRARY",
@@ -59,10 +75,6 @@ function openAsset(assetId: string) {
 function openInbox(item: InboxItem) {
   navigate("inbox", item.assetId);
 }
-function openDiagnostic(index: number) {
-  navigate("inbox", `diagnostic-${index}`);
-  inboxDetailOpen.value = true;
-}
 // Candidates are cards (2026-09-25 redesign); the full candidate opens in a dialog instead of a side panel.
 const inboxDetailOpen = ref(false);
 const inboxDetailExpanded = ref(false);
@@ -71,11 +83,10 @@ function openInboxDetail(item: InboxItem) {
   inboxDetailOpen.value = true;
 }
 function candidateLocked(item: InboxItem): boolean {
-  return !inboxManaged.value || !!item.frozen || !!candidateManager.value?.writing || !!candidateManager.value?.isRewriting(item.candidateId);
+  return !inboxManaged.value || !!candidateManager.value?.writing || !!candidateManager.value?.isRewriting(item.candidateId);
 }
-function needsRegistration(item: InboxItem): boolean { return !item.candidateId || !!item.problem?.includes("外部"); }
 // Card actions select the card first so progress and results show on it.
-function cardAct(action: "accept" | "defer" | "reject" | "register", item: InboxItem) {
+function cardAct(action: "accept" | "defer" | "reject", item: InboxItem) {
   openInbox(item);
   void candidateManager.value?.act(action, item);
 }
@@ -89,8 +100,8 @@ function setLibraryType(type: "" | AssetType) {
   applyFilters();
 }
 const bucketCounts = computed(() => ({
-  PENDING: inboxItems.value.filter(item => (item.reviewBucket ?? "PENDING") === "PENDING").length,
-  DEFERRED: inboxItems.value.filter(item => item.reviewBucket === "DEFERRED").length,
+  PENDING: inboxItems.value.filter(item => (item.status ?? "PENDING") === "PENDING").length,
+  DEFERRED: inboxItems.value.filter(item => item.status === "DEFERRED").length,
   ALL: inboxItems.value.length,
 }));
 
@@ -140,13 +151,13 @@ const inboxQuery = ref("");
 const inboxPageSize = ref(20);
 const inboxPage = ref(1);
 const filteredInbox = computed(() => inboxItems.value
-  .filter(item => inboxBucket.value === "ALL" || (item.reviewBucket ?? "PENDING") === inboxBucket.value)
+  .filter(item => inboxBucket.value === "ALL" || (item.status ?? "PENDING") === inboxBucket.value)
   .filter(item => !inboxType.value || item.type === inboxType.value)
   .filter(item => inboxWorkspace.value === "" || (inboxWorkspace.value === null
     ? item.scope === "GLOBAL" : item.workspace === inboxWorkspace.value))
-  .filter(item => !inboxQuery.value.trim() || [item.title, item.summary, item.rawMarkdown]
+  .filter(item => !inboxQuery.value.trim() || [item.title, item.summary, item.bodyMarkdown]
     .some(value => value.toLocaleLowerCase().includes(inboxQuery.value.trim().toLocaleLowerCase())))
-  .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.assetId.localeCompare(b.assetId)));
+  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.assetId.localeCompare(b.assetId)));
 const inboxPageCount = computed(() => Math.ceil(filteredInbox.value.length / inboxPageSize.value));
 const inboxPageItems = computed(() => filteredInbox.value.slice((inboxPage.value - 1) * inboxPageSize.value, inboxPage.value * inboxPageSize.value));
 watch([inboxType, inboxWorkspace, inboxPageSize, inboxBucket, inboxQuery], () => {
@@ -155,11 +166,9 @@ watch([inboxType, inboxWorkspace, inboxPageSize, inboxBucket, inboxQuery], () =>
 });
 watch(inboxPageCount, count => { inboxPage.value = Math.max(1, Math.min(inboxPage.value, count)); });
 watch(inboxPage, () => { if (listScroll.value) listScroll.value.scrollTop = 0; });
-const inboxDiagnostics = ref<InboxDiagnostic[]>([]);
 const inboxLoading = ref(false);
 const inboxError = ref<HubApiError>();
 const selectedInboxItem = ref<InboxItem>();
-const selectedInboxDiagnostic = ref<InboxDiagnostic>();
 const inboxOriginalOpen = ref(false);
 const inboxOriginalExpanded = ref(false);
 const inboxBaselineOpen = ref(false);
@@ -243,16 +252,11 @@ watch(
   { immediate: true },
 );
 function syncInboxSelection() {
-  selectedInboxDiagnostic.value = undefined;
   const id = route.value.page === "inbox" ? route.value.id : undefined;
   if (!id) { selectedInboxItem.value = undefined; return; }
   const item = inboxItems.value.find((item) => item.assetId === id);
   if (item) { selectInboxItem(item); return; }
   selectedInboxItem.value = undefined;
-  if (/^diagnostic-\d+$/.test(id)) {
-    const diagnostic = inboxDiagnostics.value[Number(id.slice(11))];
-    if (diagnostic) selectInboxDiagnostic(diagnostic);
-  }
 }
 async function loadWorkspaces(): Promise<void> {
   workspaceController?.abort();
@@ -437,7 +441,6 @@ async function loadInbox({ preserveDetails = false }: { preserveDetails?: boolea
     preservingInboxDetails = preserveDetails;
     inboxItems.value = result.items;
     inboxManaged.value = result.managed === true;
-    inboxDiagnostics.value = result.diagnostics;
     if (preserveDetails) {
       if (selectedInboxItem.value) selectedInboxItem.value = result.items.find(item => item.assetId === selectedInboxItem.value?.assetId) ?? selectedInboxItem.value;
       await nextTick();
@@ -449,9 +452,7 @@ async function loadInbox({ preserveDetails = false }: { preserveDetails?: boolea
     }
     if (!preserveDetails) {
       inboxItems.value = [];
-      inboxDiagnostics.value = [];
       selectedInboxItem.value = undefined;
-      selectedInboxDiagnostic.value = undefined;
     }
     inboxError.value = asHubApiError(error);
   } finally {
@@ -464,16 +465,6 @@ async function loadInbox({ preserveDetails = false }: { preserveDetails?: boolea
 
 function selectInboxItem(item: InboxItem): void {
   selectedInboxItem.value = item;
-  selectedInboxDiagnostic.value = undefined;
-}
-
-function selectInboxDiagnostic(diagnostic: InboxDiagnostic): void {
-  selectedInboxDiagnostic.value = diagnostic;
-  selectedInboxItem.value = undefined;
-}
-
-function frontmatterText(frontmatter: object): string {
-  return JSON.stringify(frontmatter, null, 2);
 }
 
 function inboxChangeType(item: InboxItem): string {
@@ -505,16 +496,10 @@ function presentError(
       detail: "刷新资产列表以获取当前内容。",
     };
   }
-  if (context === "ASSET_DETAIL" && error.code === "ASSET_STALE") {
-    return {
-      title: "知识文件已更新",
-      detail: "索引已刷新，重试即可读取最新内容。",
-    };
-  }
   if (error.status === 503) {
     return {
       title: context === "INBOX" ? "知识候选暂时不可用" : "知识服务暂时不可用",
-      detail: "本地索引或工作区配置尚未就绪，请恢复后重试。",
+      detail: "主库或工作区配置尚未就绪，请恢复后重试。",
     };
   }
   if (error.status >= 500) {
@@ -539,7 +524,7 @@ function presentError(
         </div>
         <button type="button" class="quiet-button" :disabled="inboxLoading" @click="loadInbox()"><UiIcon name="refresh" />刷新</button>
         <FilterMenu class="inbox-help" label="知识候选说明" icon="info">
-          <div class="inbox-help-copy"><h2>等待确认的知识</h2><p>候选尚未正式入库，不参与知识召回。点击标题可查看摘要、完整原文与文件信息。</p><p>接受会确认当前审阅版本；暂存仅改变分区；拒绝会删除这份候选。AI 改稿保存后仍需你接受。</p><p>文件问题单独展示在诊断信息中。</p></div>
+          <div class="inbox-help-copy"><h2>等待确认的知识</h2><p>候选尚未正式入库，不参与知识召回。点击标题可查看摘要、正文与版本信息。</p><p>接受会确认当前审阅版本；暂存仅改变分区；拒绝会将候选标记为已拒绝。AI 改稿保存后仍需你接受。</p></div>
         </FilterMenu>
       </template>
     </PageHeader>
@@ -593,7 +578,7 @@ function presentError(
                 </td>
                 <td><span class="asset-type" :class="`asset-tone-${asset.type}`">{{ displayValue(asset.type) }}</span></td>
                 <td class="asset-workspace-cell" :title="asset.workspace ?? '全局'">{{ asset.scope === 'GLOBAL' ? '全局' : asset.workspace }}</td>
-                <td><time class="asset-updated" :datetime="asset.modifiedAt" :title="formatListDate(asset.modifiedAt)">{{ shortDate(asset.modifiedAt) }}</time></td>
+                <td><time class="asset-updated" :datetime="asset.updatedAt" :title="formatListDate(asset.updatedAt)">{{ shortDate(asset.updatedAt) }}</time></td>
               </tr>
             </tbody>
           </table>
@@ -640,22 +625,23 @@ function presentError(
           <h2><span v-if="assetDetail.knowledgeNumber != null">#{{ assetDetail.knowledgeNumber }} · </span>{{ assetDetail.title }}</h2>
           <div class="asset-detail-tags">
             <span class="pill">{{ assetDetail.scope === "GLOBAL" ? "全局知识" : assetDetail.workspace }}</span>
-            <span class="pill">{{ shortDate(assetDetail.modifiedAt) }} 更新</span>
+            <span class="pill">{{ shortDate(assetDetail.updatedAt) }} 更新</span>
+            <button type="button" class="quiet-button" :disabled="deleting" @click="deleteAsset">删除</button>
+            <p v-if="deleteError" role="alert">{{ deleteError }}</p>
             <span class="pill">使用 {{ assetDetail.usageSummary.totalUsedCount }} 次</span>
           </div>
           <p class="asset-detail-summary">{{ assetDetail.summary }}</p>
           <div class="asset-detail-tabs" role="tablist" aria-label="详情内容" @keydown="handleTabKeydown">
-            <button v-for="tab in ([['RENDERED', '正文'], ['RAW', '原文'], ['INFO', '文件信息']] as const)" :id="`asset-tab-${tab[0]}`" :key="tab[0]" type="button" role="tab" aria-controls="asset-panel" :tabindex="detailTab === tab[0] ? 0 : -1" :aria-selected="detailTab === tab[0]" @click="detailTab = tab[0]">{{ tab[1] }}</button>
+            <button v-for="tab in ([['RENDERED', '正文'], ['RAW', '原文'], ['INFO', '知识信息']] as const)" :id="`asset-tab-${tab[0]}`" :key="tab[0]" type="button" role="tab" aria-controls="asset-panel" :tabindex="detailTab === tab[0] ? 0 : -1" :aria-selected="detailTab === tab[0]" @click="detailTab = tab[0]">{{ tab[1] }}</button>
           </div>
-          <div v-if="detailTab === 'RENDERED'" id="asset-panel" class="markdown-body" role="tabpanel" :aria-labelledby="`asset-tab-${detailTab}`" tabindex="0" v-html="markdownPresentation(assetDetail.renderedMarkdown)"></div>
-          <pre v-else-if="detailTab === 'RAW'" id="asset-panel" class="source-view" role="tabpanel" :aria-labelledby="`asset-tab-${detailTab}`" tabindex="0">{{ assetDetail.rawMarkdown }}</pre>
+          <div v-if="detailTab === 'RENDERED'" id="asset-panel" class="markdown-body" role="tabpanel" :aria-labelledby="`asset-tab-${detailTab}`" tabindex="0" v-html="markdownPresentation(renderer.render(assetDetail.bodyMarkdown))"></div>
+          <pre v-else-if="detailTab === 'RAW'" id="asset-panel" class="source-view" role="tabpanel" :aria-labelledby="`asset-tab-${detailTab}`" tabindex="0">{{ assetDetail.bodyMarkdown }}</pre>
           <div v-else id="asset-panel" class="asset-detail-info" role="tabpanel" :aria-labelledby="`asset-tab-${detailTab}`" tabindex="0">
             <dl class="metadata-sheet single-column">
               <div><dt>资产 ID</dt><dd><code>{{ assetDetail.assetId }}</code></dd></div>
               <div><dt>工作区</dt><dd>{{ assetDetail.workspace ?? "全局知识" }}</dd></div>
-              <div><dt>文件路径</dt><dd><code>{{ assetDetail.relativePath }}</code></dd></div>
-              <div><dt>修改时间</dt><dd><time :datetime="assetDetail.modifiedAt">{{ formatDate(assetDetail.modifiedAt) }}</time></dd></div>
-              <div><dt>内容 Hash</dt><dd><code>{{ assetDetail.contentHash }}</code></dd></div>
+              <div><dt>修改时间</dt><dd><time :datetime="assetDetail.updatedAt">{{ formatDate(assetDetail.updatedAt) }}</time></dd></div>
+              <div><dt>内容版本</dt><dd><code>{{ assetDetail.version }}</code></dd></div>
             </dl>
             <dl class="usage-strip">
               <div><dt>召回</dt><dd>{{ assetDetail.usageSummary.recallCount }}</dd></div>
@@ -669,17 +655,13 @@ function presentError(
               <div v-for="item in assetDetail.recentRecalls" :key="item.recallItemId" class="metadata-grid">
                 <code>{{ item.recallItemId }}</code><span>{{ item.deliveredMode }}</span>
                 <span>读取 {{ item.readCount }} · 使用 {{ item.totalUsedCount }}</span>
-                <span v-if="item.contentHash !== assetDetail.contentHash">内容已变化（仅显示交付证据）</span>
+                <span v-if="item.version !== assetDetail.version">内容已变化（仅显示交付证据）</span>
               </div>
               <div v-for="item in assetDetail.recentUsage" :key="item.id" class="metadata-grid">
                 <span>{{ item.kind === 'READ' ? '读取' : '使用' }}</span><time>{{ formatDate(item.occurredAt) }}</time>
                 <code>{{ item.id }}</code><span>{{ item.assetWorkspace ?? 'GLOBAL' }}</span>
               </div>
             </section>
-            <details class="detail-disclosure">
-              <summary>元信息</summary>
-              <pre class="source-view">{{ frontmatterText(assetDetail.frontmatter) }}</pre>
-            </details>
           </div>
         </article>
         <div v-else class="state-panel detail-state">
@@ -714,23 +696,21 @@ function presentError(
           <p>{{ inboxErrorCopy.detail }}</p>
           <button type="button" class="quiet-button" @click="loadInbox()">重试</button>
         </div>
-        <div v-else-if="!inboxItems.length && !inboxDiagnostics.length" class="state-panel">
+        <div v-else-if="!inboxItems.length" class="state-panel">
           <strong>知识候选已清空</strong>
-          <p>暂无知识候选或文件问题。</p>
+          <p>暂无待处理的知识候选。</p>
         </div>
         <div v-else class="candidate-list">
           <article v-for="item in inboxPageItems" :key="item.assetId" class="candidate-card" :class="{ selected: selectedInboxItem?.assetId === item.assetId }" @click="openInbox(item)">
             <div class="candidate-card-head">
-              <span v-if="item.candidateId" class="pill">候选 #{{ item.candidateId }}</span>
+              <span class="pill">候选 #{{ item.number }}</span>
               <span v-if="item.intent === 'REVISION' && item.knowledgeNumber != null" class="pill">修订 #{{ item.knowledgeNumber }}</span>
               <span class="asset-type" :class="`asset-tone-${item.type}`">{{ displayValue(item.type) }}</span>
               <span class="pill">{{ item.workspace ?? '全局' }}</span>
               <span class="candidate-status" :data-status="inboxChangeType(item)">{{ inboxChangeType(item) }}</span>
               <span v-if="candidateManager?.isRewriting(item.candidateId)" class="candidate-note"><span class="candidate-spinner" aria-hidden="true"></span>AI 修改中…</span>
-              <span v-else-if="item.problem || !item.candidateId" class="candidate-note has-problem"><UiIcon name="warning" />{{ item.problem ? '需处理' : '未登记' }}</span>
-              <span v-else-if="item.frozen" class="candidate-note">处理中</span>
-              <span v-else-if="inboxBucket === 'ALL' && item.reviewBucket === 'DEFERRED'" class="candidate-note">已暂存</span>
-              <time class="candidate-date" :datetime="item.modifiedAt" :title="formatListDate(item.modifiedAt)">{{ shortDate(item.modifiedAt) }}</time>
+              <span v-else-if="inboxBucket === 'ALL' && item.status === 'DEFERRED'" class="candidate-note">已暂存</span>
+              <time class="candidate-date" :datetime="item.updatedAt" :title="formatListDate(item.updatedAt)">{{ shortDate(item.updatedAt) }}</time>
             </div>
             <h3><button type="button" class="candidate-title" :aria-current="selectedInboxItem?.assetId === item.assetId ? 'true' : undefined" @click.stop="openInboxDetail(item)">{{ item.title }}</button></h3>
             <p class="candidate-summary">{{ item.summary }}</p>
@@ -742,26 +722,17 @@ function presentError(
             </div>
             <div class="candidate-actions" @click.stop>
               <template v-if="item.candidateId">
-                <button type="button" class="primary-button" :disabled="candidateLocked(item) || !!item.problem" @click="cardAct('accept', item)">接受</button>
-                <button type="button" class="secondary-button" :disabled="candidateLocked(item)" @click="cardAct('defer', item)">{{ item.reviewBucket === 'DEFERRED' ? '恢复待处理' : '暂存' }}</button>
-                <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(item.candidateId)" :disabled="!inboxManaged || item.frozen || !!item.problem || candidateManager?.busy" @click="cardRewrite(item)"><UiIcon name="sparkles" />AI 改稿</button>
+                <button type="button" class="primary-button" :disabled="candidateLocked(item)" @click="cardAct('accept', item)">接受</button>
+                <button type="button" class="secondary-button" :disabled="candidateLocked(item)" @click="cardAct('defer', item)">{{ item.status === 'DEFERRED' ? '恢复待处理' : '暂存' }}</button>
+                <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(item.candidateId)" :disabled="!inboxManaged || candidateManager?.busy" @click="cardRewrite(item)"><UiIcon name="sparkles" />AI 改稿</button>
               </template>
-              <button v-if="needsRegistration(item)" type="button" class="secondary-button" :disabled="!inboxManaged || item.frozen" @click="cardAct('register', item)">{{ !item.candidateId && item.currentFormalHash ? '以当前正式内容为基线登记修订' : '登记当前审阅内容' }}</button>
               <span class="candidate-spacer"></span>
               <button type="button" class="quiet-button candidate-link" @click="openInboxDetail(item)">查看全文</button>
               <button v-if="item.candidateId" type="button" class="secondary-button danger-text" :disabled="candidateLocked(item)" @click="cardAct('reject', item)">拒绝</button>
             </div>
           </article>
           <div v-if="!inboxPageItems.length && inboxItems.length" class="state-panel"><strong>没有符合条件的候选</strong><p>试试其他关键词，或调整筛选条件。</p><button type="button" class="quiet-button" @click="inboxType = ''; inboxWorkspace = ''; inboxBucket = 'ALL'; inboxQuery = ''">清除筛选与搜索</button></div>
-          <p v-if="inboxPageItems.length" class="candidate-hint">接受：确认当前版本并入库 · 暂存：稍后处理 · 拒绝：删除这份候选。AI 改稿保存后仍需你接受。</p>
-          <details v-if="inboxDiagnostics.length" class="inbox-diagnostics">
-            <summary><UiIcon name="warning" />文件诊断 <span>{{ inboxDiagnostics.length }} 条</span></summary>
-            <ol class="diagnostic-list">
-              <li v-for="(diagnostic, index) in inboxDiagnostics" :key="index">
-                <button type="button" class="asset-row diagnostic-row" @click="openDiagnostic(index)"><UiIcon name="warning" /><span class="row-title">{{ diagnostic.message }}</span><code>{{ diagnostic.code }}</code><span class="row-scope">{{ diagnostic.relativePath }}</span></button>
-              </li>
-            </ol>
-          </details>
+          <p v-if="inboxPageItems.length" class="candidate-hint">接受：确认当前版本并入库 · 暂存：稍后处理 · 拒绝：标记为已拒绝。AI 改稿保存后仍需你接受。</p>
         </div>
       </section>
       <nav v-if="inboxPageCount > 1" class="asset-pagination candidate-pagination" aria-label="知识候选分页">
@@ -774,7 +745,7 @@ function presentError(
         </div>
       </nav>
 
-      <PreviewDialog v-if="inboxDetailOpen && (selectedInboxItem || selectedInboxDiagnostic || route.id)" class="candidate-dialog" label="候选详情" :expanded="inboxDetailExpanded" @close="inboxDetailOpen = false" @expand="inboxDetailExpanded = !inboxDetailExpanded">
+      <PreviewDialog v-if="inboxDetailOpen && (selectedInboxItem || route.id)" class="candidate-dialog" label="候选详情" :expanded="inboxDetailExpanded" @close="inboxDetailOpen = false" @expand="inboxDetailExpanded = !inboxDetailExpanded">
         <div class="inbox-detail-panel">
           <template v-if="selectedInboxItem">
             <header class="inbox-preview-heading">
@@ -782,34 +753,30 @@ function presentError(
               <button type="button" class="secondary-button" @click="inboxOriginalExpanded = false; inboxOriginalOpen = true">查看原文<UiIcon name="external" /></button>
             </header>
             <dl class="inbox-candidate-meta">
-              <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd>候选 #{{ selectedInboxItem.candidateId }}</dd></div>
+              <div><dt>候选编号</dt><dd>候选 #{{ selectedInboxItem.number }}</dd></div>
               <div v-if="selectedInboxItem.intent === 'REVISION' && selectedInboxItem.knowledgeNumber != null"><dt>修订目标</dt><dd>修订 #{{ selectedInboxItem.knowledgeNumber }}</dd></div>
               <div><dt>工作区</dt><dd :title="selectedInboxItem.workspace ?? '全局'">{{ selectedInboxItem.workspace ?? '全局' }}</dd></div>
               <div><dt>内容类型</dt><dd><span class="asset-type" :class="`asset-tone-${selectedInboxItem.type}`">{{ displayValue(selectedInboxItem.type) }}</span></dd></div>
               <div><dt>变更类型</dt><dd><span class="candidate-status" :data-status="inboxChangeType(selectedInboxItem)">{{ inboxChangeType(selectedInboxItem) }}</span></dd></div>
-              <div><dt>更新时间</dt><dd><time :datetime="selectedInboxItem.modifiedAt">{{ formatListDate(selectedInboxItem.modifiedAt) }}</time></dd></div>
+              <div><dt>更新时间</dt><dd><time :datetime="selectedInboxItem.updatedAt">{{ formatListDate(selectedInboxItem.updatedAt) }}</time></dd></div>
             </dl>
             <article :key="selectedInboxItem.assetId" class="inbox-document">
               <div class="inbox-preview-scroll">
-                <p v-if="selectedInboxItem.frozen && !candidateManager?.isRewriting(selectedInboxItem.candidateId)" role="status">该知识正在被处理，暂不能更新。</p>
-                <p v-if="selectedInboxItem.problem" class="field-error" role="alert">{{ selectedInboxItem.problem }}</p>
                 <CandidateSummary :item="selectedInboxItem" />
                 <details v-if="selectedInboxItem.baselineMarkdown" ref="inboxBaseline" class="detail-disclosure" :open="inboxBaselineOpen" @toggle="inboxBaselineOpen = ($event.target as HTMLDetailsElement).open">
-                  <summary>正式内容对照{{ !selectedInboxItem.baselineHash ? '（尚未绑定基线）' : selectedInboxItem.currentFormalHash !== selectedInboxItem.baselineHash ? '（基线已变化）' : '' }}</summary>
+                  <summary>正式内容对照{{ selectedInboxItem.baseVersion === null ? '（尚未绑定基线）' : selectedInboxItem.currentFormalVersion !== selectedInboxItem.baseVersion ? '（基线已变化）' : '' }}</summary>
                   <pre class="source-view">{{ selectedInboxItem.baselineMarkdown }}</pre>
                 </details>
                 <details class="detail-disclosure">
                   <summary>完整元信息</summary>
                   <dl class="metadata-sheet">
-                    <div v-if="selectedInboxItem.candidateId"><dt>候选编号</dt><dd><code>候选 #{{ selectedInboxItem.candidateId }}</code></dd></div>
+                    <div><dt>候选编号</dt><dd><code>候选 #{{ selectedInboxItem.number }}</code></dd></div>
                     <div><dt>资产 ID</dt><dd><code>{{ selectedInboxItem.assetId }}</code></dd></div>
                     <div><dt>范围</dt><dd>{{ displayValue(selectedInboxItem.scope) }}</dd></div>
                     <div><dt>工作区</dt><dd>{{ selectedInboxItem.workspace ?? "全局知识" }}</dd></div>
-                    <div><dt>修改时间</dt><dd>{{ formatDate(selectedInboxItem.modifiedAt) }}</dd></div>
-                    <div class="wide-row"><dt>文件路径</dt><dd><code>{{ selectedInboxItem.relativePath }}</code></dd></div>
-                    <div class="wide-row"><dt>内容 Hash</dt><dd><code>{{ selectedInboxItem.contentHash }}</code></dd></div>
+                    <div><dt>修改时间</dt><dd>{{ formatDate(selectedInboxItem.updatedAt) }}</dd></div>
+                    <div class="wide-row"><dt>内容版本</dt><dd><code>{{ selectedInboxItem.version }}</code></dd></div>
                   </dl>
-                  <pre class="source-view">{{ frontmatterText(selectedInboxItem.frontmatter) }}</pre>
                 </details>
               </div>
               <footer class="candidate-footer">
@@ -824,42 +791,26 @@ function presentError(
                 </div>
                 <div class="candidate-actions">
                   <template v-if="selectedInboxItem.candidateId">
-                    <button type="button" class="primary-button" :disabled="candidateLocked(selectedInboxItem) || !!selectedInboxItem.problem" @click="candidateManager?.act('accept', selectedInboxItem)"><UiIcon name="tick" />接受</button>
-                    <button type="button" class="secondary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('defer', selectedInboxItem)"><UiIcon name="folder" />{{ selectedInboxItem.reviewBucket === 'DEFERRED' ? '恢复待处理' : '暂存' }}</button>
-                    <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(selectedInboxItem.candidateId)" :disabled="!inboxManaged || selectedInboxItem.frozen || !!selectedInboxItem.problem || candidateManager?.busy" @click="candidateManager?.open('rewrite', selectedInboxItem)"><span v-if="candidateManager?.isRewriting(selectedInboxItem.candidateId)" class="candidate-spinner" aria-hidden="true"></span><UiIcon v-else name="sparkles" />{{ candidateManager?.isRewriting(selectedInboxItem.candidateId) ? 'AI 修改中…' : 'AI 改稿' }}</button>
+                    <button type="button" class="primary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('accept', selectedInboxItem)"><UiIcon name="tick" />接受</button>
+                    <button type="button" class="secondary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('defer', selectedInboxItem)"><UiIcon name="folder" />{{ selectedInboxItem.status === 'DEFERRED' ? '恢复待处理' : '暂存' }}</button>
+                    <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(selectedInboxItem.candidateId)" :disabled="!inboxManaged || candidateManager?.busy" @click="candidateManager?.open('rewrite', selectedInboxItem)"><span v-if="candidateManager?.isRewriting(selectedInboxItem.candidateId)" class="candidate-spinner" aria-hidden="true"></span><UiIcon v-else name="sparkles" />{{ candidateManager?.isRewriting(selectedInboxItem.candidateId) ? 'AI 修改中…' : 'AI 改稿' }}</button>
                     <button type="button" class="secondary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('reject', selectedInboxItem)"><UiIcon name="ban" />拒绝</button>
                   </template>
-                  <button v-if="needsRegistration(selectedInboxItem)" type="button" class="secondary-button" :disabled="!inboxManaged || selectedInboxItem.frozen" @click="candidateManager?.act('register', selectedInboxItem)">{{ !selectedInboxItem.candidateId && selectedInboxItem.currentFormalHash ? '以当前正式内容为基线登记修订' : '登记当前审阅内容' }}</button>
                 </div>
               </footer>
             </article>
           </template>
-          <article v-else-if="selectedInboxDiagnostic" class="detail-document diagnostic-document">
-            <header class="document-header">
-              <div class="document-kicker"><span class="tag warning">文件诊断</span></div>
-              <h2 class="mono">{{ selectedInboxDiagnostic.code }}</h2>
-              <p>{{ selectedInboxDiagnostic.message }}</p>
-            </header>
-            <dl class="metadata-sheet single-column">
-              <div><dt>相对路径</dt><dd><code>{{ selectedInboxDiagnostic.relativePath }}</code></dd></div>
-              <div v-if="selectedInboxDiagnostic.assetId"><dt>资产 ID</dt><dd><code>{{ selectedInboxDiagnostic.assetId }}</code></dd></div>
-            </dl>
-            <div class="boundary-note">
-              <strong>请在源文件中处理</strong>
-              <p>处理文件问题后，刷新知识候选查看结果。</p>
-            </div>
-          </article>
           <div v-else-if="inboxLoading" class="state-panel detail-state" role="status" aria-live="polite"><span class="loading-line" aria-hidden="true"></span><strong>正在读取知识候选…</strong></div>
           <div v-else class="state-panel detail-state">
             <strong>候选已不存在</strong>
-            <p>关闭详情后刷新知识候选，查看当前候选与诊断。</p>
+            <p>关闭详情后刷新知识候选，查看当前待处理候选。</p>
           </div>
         </div>
       </PreviewDialog>
       <PreviewDialog v-if="inboxOriginalOpen && selectedInboxItem" label="候选原文" :expanded="inboxOriginalExpanded" @close="inboxOriginalOpen = false" @expand="inboxOriginalExpanded = !inboxOriginalExpanded">
         <article class="detail-document inbox-original-document">
           <header class="document-header"><p class="eyebrow">Markdown 原文</p><h2>{{ selectedInboxItem.title }}</h2></header>
-          <pre class="source-view" tabindex="0" aria-label="完整候选原文">{{ selectedInboxItem.rawMarkdown }}</pre>
+          <pre class="source-view" tabindex="0" aria-label="完整候选原文">{{ selectedInboxItem.bodyMarkdown }}</pre>
         </article>
       </PreviewDialog>
     </template>
@@ -982,7 +933,6 @@ select:disabled { opacity: .5; cursor: default; }
 .candidate-title:hover { color: var(--accent); }
 .candidate-card > .candidate-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 6px; color: var(--muted); font-size: 13.5px; line-height: 1.65; }
 .candidate-note { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
-.candidate-note.has-problem { color: var(--warning); }
 .candidate-note .ui-icon { width: 12px; height: 12px; }
 .candidate-status { display: inline-flex; padding: 1px 8px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 11.5px; line-height: 18px; white-space: nowrap; }
 .candidate-status[data-status="新增"] { color: var(--success); background: color-mix(in srgb, var(--success) 13%, transparent); }
@@ -1001,10 +951,6 @@ select:disabled { opacity: .5; cursor: default; }
 .candidate-feedback.error { color: var(--warning); }
 .candidate-feedback .quiet-button { padding: 0 2px; min-height: 24px; font-size: 12px; color: var(--accent); }
 .candidate-feedback .quiet-button .ui-icon { width: 12px; height: 12px; }
-.inbox-diagnostics { padding: 6px 0; }
-.inbox-diagnostics > summary { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
-.inbox-diagnostics > summary .ui-icon { color: var(--warning); }
-.inbox-diagnostics .diagnostic-list { margin-top: 12px; }
 .candidate-spinner { flex-shrink: 0; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: candidate-spin 1s linear infinite; }
 @keyframes candidate-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .candidate-spinner { animation: none; } }

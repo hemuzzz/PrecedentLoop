@@ -10,7 +10,6 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import {
-  HOOK_ASSET_REPOSITORY_PATH_ENV,
   HOOK_DATABASE_PATH_ENV,
   HOOK_WORKSPACE_CONFIG_PATH_ENV,
   createUserPromptSubmitHookConfiguration,
@@ -223,7 +222,6 @@ interface Fixture {
   databasePath: string;
   otherWorkspacePath: string;
   rootPath: string;
-  repositoryPath: string;
   unmatchedPath: string;
   workspaceConfigPath: string;
   workspacePath: string;
@@ -264,7 +262,6 @@ async function createFixture(options: { initializeDatabase?: boolean } = {}): Pr
   }
   return {
     rootPath,
-    repositoryPath: join(rootPath, "repository"),
     workspacePath,
     otherWorkspacePath,
     unmatchedPath,
@@ -284,7 +281,6 @@ async function runHookSource(source: string, fixture: Fixture): Promise<HookProc
       cwd: process.cwd(),
       env: {
         ...process.env,
-        [HOOK_ASSET_REPOSITORY_PATH_ENV]: fixture.repositoryPath,
         [HOOK_DATABASE_PATH_ENV]: fixture.databasePath,
         [HOOK_WORKSPACE_CONFIG_PATH_ENV]: fixture.workspaceConfigPath,
         [LOG_PATH_ENV]: join(fixture.rootPath, "logs", "precedent-loop.log"),

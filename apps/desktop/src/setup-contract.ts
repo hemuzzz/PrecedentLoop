@@ -40,10 +40,10 @@ export interface DirectoryCheck {
   selectedPath: string;
   dataDirectory: string;
   inspection: DataDirectoryInspection;
-  paths: { assetRepositoryPath: string; databasePath: string; workspaceConfigPath: string; logPath: string; desktopLogPath: string };
+  paths: { databasePath: string; workspaceConfigPath: string; logPath: string; desktopLogPath: string };
   port: number | null;
   portReason?: string;
-  statistics?: { assets?: number; candidates?: number; workspaces?: number };
+  statistics?: { workspaces?: number };
 }
 export interface CoreCheck {
   id: "directory" | "storage" | "runtime" | "service" | "mcp";

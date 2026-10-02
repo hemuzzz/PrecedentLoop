@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { unlinkSync } = require("node:fs");
+const { unlinkSync, readFileSync } = require("node:fs");
 
 async function main() {
   const databasePath = process.argv[2];
@@ -30,90 +30,35 @@ async function main() {
     .prepare("SELECT sqlite_compileoption_used(?) AS value")
     .get("ENABLE_FTS5").value;
 
-  database.exec(`
-    CREATE TABLE asset_catalog (
-      asset_id TEXT PRIMARY KEY,
-      asset_type TEXT NOT NULL,
-      asset_scope TEXT NOT NULL,
-      workspace TEXT,
-      title TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      file_path TEXT NOT NULL UNIQUE,
-      content_hash TEXT NOT NULL,
-      file_size INTEGER NOT NULL,
-      modified_at TEXT NOT NULL,
-      indexed_at TEXT NOT NULL
-    );
-    CREATE VIRTUAL TABLE asset_fts USING fts5(
-      title,
-      summary,
-      body,
-      content = '',
-      contentless_delete = 1,
-      tokenize = 'trigram'
-    );
-  `);
-
-  const insertCatalog = database.prepare(`
-    INSERT INTO asset_catalog (
-      asset_id, asset_type, asset_scope, workspace, title, summary,
-      file_path, content_hash, file_size, modified_at, indexed_at
-    ) VALUES (?, 'MEMORY', 'GLOBAL', NULL, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertFts = database.prepare(
-    "INSERT INTO asset_fts (rowid, title, summary, body) VALUES (?, ?, ?, ?)",
-  );
+  database.exec(readFileSync(require("node:path").join(__dirname, "../src/storage/schema.sql"), "utf8"));
+  const insertAsset = database.prepare("INSERT INTO asset(asset_id,asset_type,asset_scope,title,summary,body_markdown) VALUES (?,'MEMORY','GLOBAL',?,?,?)");
+  const insertFts = database.prepare("INSERT INTO asset_fts(asset_id,title,summary,body_markdown) VALUES (?,?,?,?)");
   const matchCount = database.prepare("SELECT count(*) AS count FROM asset_fts WHERE asset_fts MATCH ?");
-
-  const initialCatalog = insertCatalog.run(
-    "ast1000000000000000001",
-    "充值回调规则",
-    "callback transaction",
-    "assets/global/memories/callback.md",
-    "hash-one",
-    100,
-    "2026-09-04T00:00:00.000Z",
-    "2026-09-04T00:00:00.000Z",
-  );
-  const rowid = Number(initialCatalog.lastInsertRowid);
-  insertFts.run(rowid, "充值回调规则", "callback transaction", "正文包含充值回调和callback transaction");
+  const assetId = "ast1000000000000000001";
+  insertAsset.run(assetId, "充值回调规则", "callback transaction", "正文包含充值回调和callback transaction");
+  insertFts.run(assetId, "充值回调规则", "callback transaction", "正文包含充值回调和callback transaction");
 
   assert.equal(matchCount.get("充值回调").count, 1);
   assert.equal(matchCount.get("callback").count, 1);
   assert.equal(matchCount.get("充").count, 0);
   assert.equal(matchCount.get("充值").count, 0);
 
-  database.prepare("DELETE FROM asset_fts WHERE rowid = ?").run(rowid);
+  database.prepare("DELETE FROM asset_fts WHERE asset_id = ?").run(assetId);
   assert.equal(matchCount.get("充值回调").count, 0);
 
-  insertFts.run(rowid, "资金结算规则", "settlement transaction", "新正文包含资金结算和settlement transaction");
+  insertFts.run(assetId, "资金结算规则", "settlement transaction", "新正文包含资金结算和settlement transaction");
   assert.equal(matchCount.get("充值回调").count, 0);
   assert.equal(matchCount.get("资金结算").count, 1);
 
   const replaceTransaction = database.transaction(() => {
-    database.prepare("DELETE FROM asset_fts WHERE rowid = ?").run(rowid);
-    database.prepare("DELETE FROM asset_catalog WHERE rowid = ?").run(rowid);
-    const replacement = insertCatalog.run(
-      "ast1000000000000000002",
-      "发票申请规则",
-      "invoice transaction",
-      "assets/global/memories/invoice.md",
-      "hash-two",
-      120,
-      "2026-09-04T00:01:00.000Z",
-      "2026-09-04T00:01:00.000Z",
-    );
-    insertFts.run(
-      Number(replacement.lastInsertRowid),
-      "发票申请规则",
-      "invoice transaction",
-      "新正文包含发票申请和invoice transaction",
-    );
+    database.prepare("DELETE FROM asset_fts WHERE asset_id = ?").run(assetId);
+    database.prepare("UPDATE asset SET title='发票申请规则' WHERE asset_id=?").run(assetId);
+    insertFts.run(assetId, "发票申请规则", "invoice transaction", "新正文包含发票申请和invoice transaction");
     throw new Error("intentional rollback");
   });
 
   assert.throws(replaceTransaction, /intentional rollback/);
-  assert.equal(database.prepare("SELECT title FROM asset_catalog WHERE rowid = ?").get(rowid).title, "充值回调规则");
+  assert.equal(database.prepare("SELECT title FROM asset WHERE asset_id = ?").get(assetId).title, "充值回调规则");
   assert.equal(matchCount.get("资金结算").count, 1);
   assert.equal(matchCount.get("发票申请").count, 0);
 
@@ -124,7 +69,7 @@ async function main() {
     `${JSON.stringify({
       architecture: process.arch,
       betterSqlite3Version: packageVersion,
-      contentlessDeleteAvailable: true,
+      ordinaryFtsAvailable: true,
       deletePassed: true,
       fts5Available: true,
       fts5CompileOption,

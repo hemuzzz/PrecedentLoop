@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { moduleRoot } from "./knowledge-fixture.js";
 
 // Independent processes, not Promise-only calls on a serialized service instance.
-export function runKnowledgeWriter(options: { databasePath: string; repositoryPath: string; workspaceConfigPath: string }, body: string): Promise<string> {
+export function runKnowledgeWriter(options: { databasePath: string; workspaceConfigPath: string }, body: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `
       Date.now = () => 1900000000000;
@@ -12,8 +12,8 @@ export function runKnowledgeWriter(options: { databasePath: string; repositoryPa
       const { AssetSearchService } = await import(${JSON.stringify(new URL("asset/index.js", moduleRoot).href)});
       const options = ${JSON.stringify(options)};
       const repository = new KnowledgeRepository(options.databasePath);
-      const search = new AssetSearchService({ ...options, refreshIndex: async () => undefined });
-      const service = new KnowledgeService(repository, new WorkspaceCapabilityService(repository, options.workspaceConfigPath), search, () => {});
+      const search = new AssetSearchService(options);
+      const service = new KnowledgeService(repository, new WorkspaceCapabilityService(repository, options.workspaceConfigPath), search);
       try { ${body} } finally { search.close(); repository.close(); }
     `], { stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
     let stdout = "", stderr = "";

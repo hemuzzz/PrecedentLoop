@@ -2,19 +2,14 @@ import { Hono, type Context } from "hono";
 import { z, type ZodType } from "zod";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CandidateService, requestIdSchema } from "../asset/candidate-service.js";
-import { RepositoryOperationError, withRepositoryAccess } from "../asset/coordination.js";
-import { AssetConfirmationError } from "../asset/confirmation.js";
+import { RepositoryOperationError } from "../asset/errors.js";
+import { WorkspaceConfigError } from "../workspace/config.js";
 import { AiService } from "../ai/service.js";
 
 import {
   AssetLibraryInputError,
   AssetNotFoundError,
   AssetSearchInputError,
-  AssetSearchUnavailableError,
-  AssetStaleError,
-  InboxApplicationService,
-  InboxUnavailableError,
-  type AssetIndexStatus,
 } from "../asset/index.js";
 import type { KnowledgeProjection } from "../knowledge/projection.js";
 import { KnowledgeError } from "../knowledge/model.js";
@@ -38,20 +33,18 @@ export interface RestApiDependencies {
   allowedAuthority: string;
   overviewService: Pick<OverviewApplicationService, "get">;
   assetService: HubAssetApplicationService;
-  inboxService: Pick<InboxApplicationService, "scan">;
-  indexStatus: () => AssetIndexStatus;
+  inboxService: { scan: CandidateService["list"] };
   projection: KnowledgeProjection;
   onInternalError?: (error: unknown) => void;
   systemStatusService: Pick<SystemStatusApplicationService, "get">;
   candidateService?: CandidateService;
   aiService?: AiService;
-  refreshIndex?: () => Promise<void>;
 }
 
 export function createRestApiApp(dependencies: RestApiDependencies): Hono {
   const app = new Hono();
   const writeToken = randomBytes(32).toString("hex");
-  const writeRoutes = new Set(["/api/inbox/accept", "/api/inbox/defer", "/api/inbox/reject", "/api/inbox/register", "/api/inbox/import", "/api/inbox/rewrite", "/api/inbox/workspaces", "/api/inbox/test"]);
+  const writeRoutes = new Set(["/api/assets/delete", "/api/inbox/accept", "/api/inbox/defer", "/api/inbox/reject", "/api/inbox/import", "/api/inbox/rewrite", "/api/inbox/workspaces", "/api/inbox/test"]);
 
   app.use("/api/*", async (context, next) => {
     if (!requestIsAllowed(context, dependencies.allowedAuthority)) {
@@ -77,10 +70,14 @@ export function createRestApiApp(dependencies: RestApiDependencies): Hono {
       if (context.req.header("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") throw invalidRequest("CONTENT_TYPE_INVALID", "写请求只接受 application/json");
     }
     context.header("Cache-Control", "no-store");
-    if (context.req.method === "GET" && dependencies.candidateService) await withRepositoryAccess(dependencies.candidateService.options.repositoryPath, next);
-    else await next();
+    await next();
   });
 
+  app.post("/api/assets/delete", async context => {
+    parseStrictQuery(context, [], z.object({}).strict());
+    if (!dependencies.candidateService) throw unavailable();
+    return success(context, await dependencies.candidateService.delete(await readJson(context)));
+  });
   app.get("/api/inbox/session", context => {
     parseStrictQuery(context, [], z.object({}).strict());
     if (!dependencies.candidateService) throw unavailable();
@@ -115,15 +112,10 @@ export function createRestApiApp(dependencies: RestApiDependencies): Hono {
     if (!dependencies.aiService) throw unavailable();
     return success(context, { workspaces: await dependencies.aiService.importWorkspaces() });
   });
-  for (const action of ["accept", "defer", "reject", "register"] as const) app.post(`/api/inbox/${action}`, async context => {
+  for (const action of ["accept", "defer", "reject"] as const) app.post(`/api/inbox/${action}`, async context => {
     parseStrictQuery(context, [], z.object({}).strict());
     if (!dependencies.candidateService) throw unavailable();
     const result = await dependencies.candidateService[action](await readJson(context));
-    if (action === "accept") {
-      // The commit is already durable. Publish its derived index immediately
-      // for the next Hub/MCP read; index repair cannot undo that commit.
-      try { await dependencies.refreshIndex?.(); } catch (error) { dependencies.onInternalError?.(error); }
-    }
     return success(context, result);
   });
   for (const action of ["import", "rewrite"] as const) app.post(`/api/inbox/${action}`, async context => {
@@ -138,7 +130,6 @@ export function createRestApiApp(dependencies: RestApiDependencies): Hono {
   });
 
   app.get("/api/assets", async (context) => {
-    assertIndexReady(dependencies.indexStatus());
     const query = parseStrictQuery(
       context,
       ["query", "workspace", "type", "scope", "limit", "offset"],
@@ -159,14 +150,12 @@ export function createRestApiApp(dependencies: RestApiDependencies): Hono {
 
   app.get("/api/assets/:assetId", async (context) => {
     parseStrictQuery(context, [], z.object({}).strict());
-    assertIndexReady(dependencies.indexStatus());
     const path = parsePath(assetPathSchema, { assetId: context.req.param("assetId") }, "ASSET_ID_INVALID");
     return success(context, { asset: await dependencies.assetService.get(path.assetId) });
   });
 
   app.get("/api/assets/:assetId/diff", async (context) => {
     parseStrictQuery(context, [], z.object({}).strict());
-    assertIndexReady(dependencies.indexStatus());
     const path = parsePath(assetPathSchema, { assetId: context.req.param("assetId") }, "ASSET_ID_INVALID");
     return success(context, { diff: await dependencies.assetService.diff(path.assetId) });
   });
@@ -260,24 +249,6 @@ function parsePath<T>(schema: ZodType<T>, value: unknown, code: string): T {
   return parsed.data;
 }
 
-function assertIndexReady(status: AssetIndexStatus): void {
-  if (status.indexState === "READY") {
-    return;
-  }
-  if (status.diagnostics.some(({ code }) => code === "INVALID_WORKSPACE_CONFIG")) {
-    throw new RestError(503, {
-      code: "WORKSPACE_CONFIG_UNAVAILABLE",
-      message: "Workspace configuration is unavailable or invalid",
-      retryable: true,
-    });
-  }
-  throw new RestError(503, {
-    code: "ASSET_INDEX_UNAVAILABLE",
-    message: "Asset Catalog/FTS is not ready for queries",
-    retryable: true,
-  });
-}
-
 function requestIsAllowed(context: Context, allowedAuthority: string): boolean {
   if (context.req.header("host") !== allowedAuthority) {
     return false;
@@ -290,8 +261,10 @@ function mapRestError(error: unknown, onInternalError: ((error: unknown) => void
   if (error instanceof RestError) {
     return error;
   }
+  if (error instanceof WorkspaceConfigError) return new RestError(503, { code: error.code, message: "Workspace configuration is unavailable or invalid", retryable: true });
   if (error instanceof z.ZodError) return invalidRequest("INPUT_INVALID", "请求字段不符合操作要求");
-  if (error instanceof RepositoryOperationError || error instanceof AssetConfirmationError) {
+  if (error instanceof RepositoryOperationError) {
+    if (error.code === "ASSET_HAS_OPEN_CANDIDATE") return new RestError(409, { code: error.code, message: error.message, retryable: false });
     const status = /MIGRATION|RECOVERY|UNAVAILABLE|CONFIGURATION|UNSUPPORTED|SHUTTING_DOWN/u.test(error.code) ? 503
       : /NOT_FOUND/u.test(error.code) ? 404 : /INVALID|REQUIRED/u.test(error.code) ? 400 : 409;
     return new RestError(status, { code: error.code, message: error.message, retryable: false });
@@ -304,35 +277,6 @@ function mapRestError(error: unknown, onInternalError: ((error: unknown) => void
   }
   if (error instanceof AssetNotFoundError) {
     return new RestError(404, { code: "ASSET_NOT_FOUND", message: "Asset does not exist", retryable: false });
-  }
-  if (error instanceof AssetStaleError) {
-    return new RestError(409, {
-      code: "ASSET_STALE",
-      message: "Asset no longer matches its Catalog projection; retry after refresh",
-      retryable: true,
-    });
-  }
-  if (error instanceof AssetSearchUnavailableError) {
-    return new RestError(503, error.reason === "WORKSPACE_CONFIGURATION"
-      ? {
-          code: "WORKSPACE_CONFIG_UNAVAILABLE",
-          message: "Workspace configuration is unavailable or invalid",
-          retryable: true,
-        }
-      : {
-          code: "ASSET_INDEX_UNAVAILABLE",
-          message: "Current Asset qualification could not be confirmed",
-          retryable: true,
-        });
-  }
-  if (error instanceof InboxUnavailableError) {
-    return new RestError(503, {
-      code: error.reason === "WORKSPACE_CONFIGURATION" ? "WORKSPACE_CONFIG_UNAVAILABLE" : "INBOX_SCAN_UNAVAILABLE",
-      message: error.reason === "WORKSPACE_CONFIGURATION"
-        ? "Workspace configuration is unavailable or invalid"
-        : "Inbox could not be scanned completely",
-      retryable: true,
-    });
   }
   if (error instanceof DatabaseSchemaError) return new RestError(503, { code: error.code, message: error.message, retryable: false });
   if (error instanceof KnowledgeError) return new RestError(503, { code: error.code, message: error.code, retryable: true });

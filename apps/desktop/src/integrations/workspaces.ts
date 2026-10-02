@@ -106,7 +106,7 @@ export class WorkspaceImporter {
     if (current.fingerprint !== plan.snapshot.fingerprint) throw new Error("外部配置已变化，请重新读取");
     if (json(await this.worker(this.listRequest(current))) !== json(plan.projects)) throw new Error("项目列表已变化，请重新读取");
     const result = z.object({ workspaces: z.array(z.object({ paths: z.array(z.string()) }).passthrough()) }).parse(await this.worker({
-      action: "import", statePath: current.statePath, repositoryPath: join(current.dataDirectory, "repository"), workspaceConfigPath: current.target,
+      action: "import", statePath: current.statePath, databasePath: join(current.dataDirectory, "runtime/precedent-loop.sqlite"), workspaceConfigPath: current.target,
       paths: plan.paths, expectedConfig: current.config, append: true, ...this.sources(),
     }));
     return { imported: result.workspaces.length, paths: result.workspaces.flatMap(workspace => workspace.paths) };

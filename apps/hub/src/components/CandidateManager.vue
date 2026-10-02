@@ -29,7 +29,7 @@ const importMenu = ref<InstanceType<typeof FilterMenu>>();
 const afterMarkdown = ref("");
 const rewriteRequestId = ref("");
 const storageKey = "precedent-loop-inbox-operation";
-type OperationKind = "import" | "rewrite" | "accept" | "defer" | "reject" | "register";
+type OperationKind = "import" | "rewrite" | "accept" | "defer" | "reject";
 interface OperationContext { requestId: string; kind: OperationKind; candidateId?: string | undefined }
 const context = ref<OperationContext>();
 const writingContext = ref<OperationContext>();
@@ -59,12 +59,19 @@ const selectedFeedback = computed(() => feedback.value.candidateId && feedback.v
 let timer: ReturnType<typeof setTimeout> | undefined;
 let disposed = false;
 const diff = computed(() => {
-  const before = rewriteBefore.value?.rawMarkdown.split("\n") ?? [], after = afterMarkdown.value.split("\n");
+  const before = rewriteBefore.value ? displayContent(rewriteBefore.value).split("\n") : [], after = afterMarkdown.value.split("\n");
   let start = 0, oldEnd = before.length, newEnd = after.length;
   while (start < oldEnd && start < newEnd && before[start] === after[start]) start++;
   while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd--; }
   return { removed: before.slice(start, oldEnd).join("\n"), added: after.slice(start, newEnd).join("\n"), changed: start < oldEnd || start < newEnd };
 });
+function displayContent(value: Pick<InboxItem, "title" | "summary" | "bodyMarkdown">): string {
+  const heading = `# ${value.title}`;
+  const firstLine = /^([^\r\n]*)(?:\r\n|\r|\n|$)/u.exec(value.bodyMarkdown)!;
+  const body = firstLine[1] === heading
+    ? value.bodyMarkdown.slice(firstLine[0].length).replace(/^(?:\r\n|\r|\n)+/u, "") : value.bodyMarkdown;
+  return `${heading}\n\n${value.summary}\n\n${body}`;
+}
 function remember(id: string, next?: OperationContext): void {
   if (next) context.value = next;
   else if (context.value?.requestId !== id) {
@@ -72,7 +79,7 @@ function remember(id: string, next?: OperationContext): void {
     try {
       const saved: unknown = JSON.parse(localStorage.getItem(`${storageKey}-context`) || "null");
       if (saved && typeof saved === "object" && "requestId" in saved && saved.requestId === id
-        && "kind" in saved && typeof saved.kind === "string" && ["import", "rewrite", "accept", "defer", "reject", "register"].includes(saved.kind)) {
+        && "kind" in saved && typeof saved.kind === "string" && ["import", "rewrite", "accept", "defer", "reject"].includes(saved.kind)) {
         context.value = { requestId: id, kind: saved.kind as OperationKind,
           ...("candidateId" in saved && typeof saved.candidateId === "string" ? { candidateId: saved.candidateId } : {}) };
       }
@@ -105,7 +112,7 @@ async function poll(id?: string): Promise<void> {
       emit("refresh");
       if (result.operation.operation === "rewrite" && result.operation.requestId === rewriteRequestId.value && rewriteBefore.value && !afterMarkdown.value) {
         const updated = (await api.getInbox()).items.find(candidate => candidate.candidateId === rewriteBefore.value?.candidateId);
-        if (updated) afterMarkdown.value = updated.rawMarkdown;
+        if (updated) afterMarkdown.value = displayContent(updated);
       }
     }
   } catch (failure) {
@@ -138,9 +145,9 @@ async function open(kind: "import" | "rewrite", selected?: InboxItem): Promise<v
   }
   preparing.value = false;
 }
-function selection(selected: InboxItem, requestId: string) { return { requestId, candidateId: selected.candidateId, assetId: selected.assetId, candidateHash: selected.contentHash }; }
-async function act(action: "accept" | "defer" | "reject" | "register", selected: InboxItem, confirmed = false): Promise<void> {
-  if (writing.value || selected.frozen) return;
+function selection(selected: InboxItem, requestId: string) { return { requestId, candidateId: selected.candidateId, assetId: selected.assetId, candidateVersion: selected.version }; }
+async function act(action: "accept" | "defer" | "reject", selected: InboxItem, confirmed = false): Promise<void> {
+  if (writing.value) return;
   if (action === "reject" && !confirmed) { item.value = { ...selected }; modal.value = "delete"; return; }
   const requestId = crypto.randomUUID();
   writingContext.value = { requestId, kind: action, candidateId: selected.candidateId };
@@ -148,9 +155,8 @@ async function act(action: "accept" | "defer" | "reject" | "register", selected:
   writing.value = true; error.value = "";
   if (operation.value?.state !== "RUNNING") remember(requestId, { requestId, kind: action, candidateId: selected.candidateId });
   try {
-    const input = action === "register" ? { requestId, relativePath: selected.relativePath, candidateHash: selected.contentHash,
-      ...(selected.baselineHash || selected.currentFormalHash ? { baselineHash: selected.baselineHash ?? selected.currentFormalHash } : {}) }
-      : { ...selection(selected, requestId), ...(action === "defer" ? { deferred: selected.reviewBucket !== "DEFERRED" } : {}), ...(action === "accept" && selected.baselineHash ? { baselineHash: selected.baselineHash } : {}) };
+    const input = { ...selection(selected, requestId), ...(action === "defer" ? { deferred: selected.status !== "DEFERRED" } : {}),
+      ...(action === "accept" && selected.baseVersion !== null ? { baseVersion: selected.baseVersion } : {}) };
     await api.candidateAction(action, input);
     modal.value = null;
     if (operation.value?.state !== "RUNNING") await poll(requestId);
@@ -240,24 +246,24 @@ defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryRes
       <p v-for="source in operation.result?.sourceResults" :key="source.name"><strong>{{ source.name }}</strong> · {{ source.explanation }}</p>
       <p v-for="warning in operation.result?.warnings" :key="warning">{{ warning }}</p>
     </details>
-    <PreviewDialog v-if="modal" :label="modal === 'delete' ? '删除候选' : modal === 'diff' ? '改稿对照' : modal === 'rewrite' ? 'AI 修改候选' : '导入知识'" :expanded="modal !== 'import' && expanded" :wide="modal === 'import'" @close="modal = null" @expand="expanded = !expanded">
+    <PreviewDialog v-if="modal" :label="modal === 'delete' ? '拒绝候选' : modal === 'diff' ? '改稿对照' : modal === 'rewrite' ? 'AI 修改候选' : '导入知识'" :expanded="modal !== 'import' && expanded" :wide="modal === 'import'" @close="modal = null" @expand="expanded = !expanded">
       <ImportKnowledgeForm v-if="modal === 'import'" v-model:files="files" v-model:targets="targets" v-model:provider="provider" v-model:instructions="instructions"
         :workspaces="importWorkspaces" :providers="providers" :busy="busy" :preparing="preparing" :error="error" @submit="submit" @close="modal = null" />
       <div v-else class="candidate-form">
         <template v-if="modal === 'delete'">
-          <h2>确认删除候选《{{ item?.title }}》？</h2>
+          <h2>确认拒绝候选《{{ item?.title }}》？</h2>
           <p v-if="error" role="alert" class="field-error">{{ error }}</p>
-          <div class="form-actions"><button class="secondary-button" type="button" @click="modal = null">取消</button><button class="danger-button" type="button" :disabled="writing" @click="item && act('reject', item, true)">删除</button></div>
+          <div class="form-actions"><button class="secondary-button" type="button" @click="modal = null">取消</button><button class="danger-button" type="button" :disabled="writing" @click="item && act('reject', item, true)">拒绝</button></div>
         </template>
         <template v-else-if="modal === 'diff'">
-          <p class="eyebrow">候选 #{{ rewriteBefore?.candidateId }}</p><h2>改稿已保存</h2>
+          <p class="eyebrow">候选 #{{ rewriteBefore?.number }}</p><h2>改稿已保存</h2>
           <p>以下展示本次发生变化的正文区段；正式知识尚未更新。</p>
           <p v-if="!diff.changed">内容未变化。</p>
           <div v-else class="revision-columns"><section><h3>修改前</h3><pre class="removed">{{ diff.removed || '（空）' }}</pre></section><section><h3>修改后</h3><pre class="added">{{ diff.added || '（空）' }}</pre></section></div>
           <button type="button" class="secondary-button" @click="modal = null">继续审阅</button>
         </template>
         <form v-else @submit.prevent="submit">
-          <p class="eyebrow">候选 #{{ item?.candidateId }}</p>
+          <p class="eyebrow">候选 #{{ item?.number }}</p>
           <h2>AI 修改候选</h2>
           <p class="muted">使用云端模型时，本次资料与选定范围内的比对知识会提交给相应模型处理。</p>
           <p>{{ item?.title }}</p>

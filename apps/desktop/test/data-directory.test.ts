@@ -13,10 +13,10 @@ function header(version: number): Buffer {
   bytes.write("SQLite format 3\0"); bytes.writeUInt32BE(version, 60);
   return bytes;
 }
-async function product(path: string, version = 1): Promise<void> {
-  await mkdir(join(path, "repository/assets"), { recursive: true });
+async function product(path: string, version = 2): Promise<void> {
   await mkdir(join(path, "runtime"), { recursive: true });
   await writeFile(dataPaths(path).databasePath, header(version));
+  try { await writeFile(join(path, ".precedentloop.json"), JSON.stringify({ formatVersion: 1, createdAt: new Date().toISOString(), dataId: randomUUID() }), { flag: "wx" }); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
 }
 async function fakeRuntime(root: string, fail = ""): Promise<string> {
   const runtime = join(root, "PrecedentLoop-Test-data.app/Contents/Resources/runtime");
@@ -27,13 +27,13 @@ async function fakeRuntime(root: string, fail = ""): Promise<string> {
     const fs = require('node:fs'), path = require('node:path');
     if (fs.realpathSync(process.argv[1]) !== process.argv[1]) process.exit(0);
     const command = process.argv[2];
-    for (const key of ['ASSET_REPOSITORY_PATH', 'DATABASE_PATH', 'WORKSPACES_PATH', 'LOG_PATH']) {
+    for (const key of ['DATABASE_PATH', 'WORKSPACES_PATH', 'LOG_PATH']) {
       if (!path.isAbsolute(process.env['PRECEDENT_LOOP_' + key])) throw Error('nonabsolute environment');
     }
     fs.appendFileSync('commands.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');
     if (command === ${JSON.stringify(fail)}) { console.error('fixture initialization failed'); process.exit(3); }
     const header = Buffer.alloc(100); header.write('SQLite format 3\\0');
-    header.writeUInt32BE(1, 60);
+    header.writeUInt32BE(2, 60);
     fs.writeFileSync(process.env.PRECEDENT_LOOP_DATABASE_PATH, header);
   `);
   return runtime;
@@ -51,13 +51,13 @@ test("directory inspection is read-only and classifies missing, empty, unrelated
     await writeFile(join(path, "mine.txt"), "preserve");
     assert.deepEqual(await inspectDataDirectory(path), { kind: "OTHER_NON_EMPTY" });
     await product(path);
-    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 1 });
+    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 2 });
     assert.equal(await readFile(join(path, "mine.txt"), "utf8"), "preserve");
-    await assert.rejects(readFile(join(path, ".precedentloop.json")), { code: "ENOENT" });
-    for (const version of [0, 1, 4, 5, 6, 7, 256, 0xffffffff]) {
+    assert.ok(await readFile(join(path, ".precedentloop.json")));
+    for (const version of [0, 1, 2, 4, 5, 6, 7, 256, 0xffffffff]) {
       await writeFile(dataPaths(path).databasePath, header(version));
       const inspection = await inspectDataDirectory(path);
-      assert.equal(inspection.kind, version === 1 ? "PRODUCT" : "PRODUCT_UNSUPPORTED");
+      assert.equal(inspection.kind, version === 2 ? "PRODUCT" : version === 0 ? "PRODUCT_INCOMPLETE" : "PRODUCT_UNSUPPORTED");
       assert.ok("storageVersion" in inspection && inspection.storageVersion === version);
     }
     for (const bytes of [Buffer.alloc(100), header(1).subarray(0, 63), Buffer.from("SQLite format 2\0"), Buffer.alloc(0)]) {
@@ -83,6 +83,8 @@ test("marker identifies incomplete product data, refuses malformed markers and o
     assert.deepEqual(await readFile(join(path, ".precedentloop.json")), before);
     await rm(join(path, ".precedentloop.json"));
     const db = await readFile(dataPaths(path).databasePath);
+    await assert.rejects(ensureMarker(path), /不是可用/);
+    await product(path);
     await ensureMarker(path);
     const marker = JSON.parse(await readFile(join(path, ".precedentloop.json"), "utf8"));
     assert.equal(marker.formatVersion, 1); assert.match(marker.dataId, /^[a-f0-9-]{36}$/u);
@@ -112,7 +114,7 @@ test("inspection reports access failure and cloud paths including a symlink with
       const cloud = join(root, "Library", name);
       assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "MISSING" } });
       await product(cloud);
-      assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 1 } });
+      assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 2 } });
       assert.equal((await inspectDataDirectory(`${cloud}-unrelated`, root)).kind, "MISSING");
     }
     await symlink(join(root, "Library/CloudStorage"), join(root, "alias"));
@@ -128,11 +130,9 @@ test("initialization uses bundled baseline initialization and produces the fixed
       const path = join(root, empty ? "empty data" : "missing data");
       if (empty) await mkdir(path);
       await initializeDataDirectory(path, runtime);
-      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 1 });
+      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 2 });
       assert.deepEqual(JSON.parse(await readFile(dataPaths(path).workspaceConfigPath, "utf8")), { schemaVersion: 1, workspaces: [] });
-      for (const branch of ["assets", "inbox"]) for (const type of ["memories", "documents", "skills"]) {
-        assert.ok((await stat(join(path, "repository", branch, "global", type))).isDirectory());
-      }
+      await assert.rejects(stat(join(path, "repository")), { code: "ENOENT" });
       assert.ok((await stat(join(path, "logs"))).isDirectory());
       assert.deepEqual((await readFile(join(path, "commands.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)),
         [["init-database", "--offline"]]);
@@ -219,7 +219,8 @@ test("all data writes reject sync-risk paths until explicit confirmation, includ
     await initializeDataDirectory(path, runtime, { home: root, syncRiskConfirmed: true });
     await rm(join(path, ".precedentloop.json"));
     await assert.rejects(ensureMarker(path, { home: root }), /确认同步盘风险/);
+    await product(path);
     await ensureMarker(path, { home: root, syncRiskConfirmed: true });
-    assert.equal(await readStorageVersion(dataPaths(path).databasePath), 1);
+    assert.equal(await readStorageVersion(dataPaths(path).databasePath), 2);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -41,7 +41,7 @@ Precedent Loop keeps that experience as **precedents**: short Markdown notes tha
 - **One knowledge base for Codex and Claude Code** — connected through MCP and hooks; the setup wizard configures both.
 - **Import what you already have** — turn existing Markdown notes into candidates using your local Codex or Claude Code CLI. No model API keys are stored in the app.
 - **Usage tracking** — see which precedents are actually used, and clean up the rest.
-- **Plain files** — precedents are ordinary Markdown in a folder you choose. Put it under git if you like. The SQLite index can always be rebuilt.
+- **Local SQLite storage** — one database holds the original knowledge, Markdown bodies, candidates, previous content, display numbers, search index and operation records. Back up the database to preserve them.
 
 ## How it compares
 
@@ -51,7 +51,7 @@ Precedent Loop keeps that experience as **precedents**: short Markdown notes tha
 | Written by | You | The agent, automatically | The agent proposes, you approve |
 | Loaded | Every session, in full | Decided by the client | On demand, per project, within a budget |
 | Shared across | One repository | One client | Codex and Claude Code, all your registered projects |
-| Stored as | Files in the repo | Client-internal storage | Markdown in your folder + local SQLite |
+| Stored as | Files in the repo | Client-internal storage | Local SQLite, with Markdown bodies |
 
 Precedent Loop does not replace the other two. Keep always-on rules in `AGENTS.md`; keep hard-won, situational knowledge here.
 
@@ -90,6 +90,10 @@ The app is written to `dist/desktop/`. See [Development](docs/development.md) fo
 
 Already have notes? Use **Import** in the Hub to turn Markdown files into candidates.
 
+The data folder uses database baseline version **2**. The desktop app identifies it by `.precedentloop.json` and `runtime/precedent-loop.sqlite`; setup explicitly initializes a new folder. Startup and app updates do not initialize or upgrade an existing database. See [Configuration](docs/configuration.md#data-folder) for the layout and recognition rules, and [Development](docs/development.md#dev-mode) for standalone initialization.
+
+Deleting knowledge in the Hub marks it as deleted in the database. It leaves recall and usage history intact, and is blocked while the knowledge has a pending or deferred candidate. There is currently no restore action.
+
 ## Privacy
 
 - All data lives in the folder you choose. The local server listens only on `127.0.0.1` and rejects requests from other hosts and origins.
@@ -110,7 +114,7 @@ Precedent Loop is an early-stage personal project.
 
 - [Desktop app](docs/desktop-app.md) — data folder, settings, updates
 - [Agent integration](docs/agent-integration.md) — MCP tools and hooks for Codex and Claude Code
-- [Knowledge format](docs/knowledge-format.md) — folder layout and Markdown front matter
+- [Knowledge content model](apps/server/resources/knowledge-content-model.md) — knowledge bodies and review guidance
 - [Review workflow](docs/review-workflow.md) — candidates, review, import and AI rewrite
 - [Configuration](docs/configuration.md) — environment variables and config files
 - [Troubleshooting](docs/troubleshooting.md)

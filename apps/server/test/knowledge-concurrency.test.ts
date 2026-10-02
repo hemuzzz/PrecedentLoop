@@ -6,7 +6,7 @@ import { runKnowledgeWriter } from "../test-support/knowledge-writer.js";
 test("eight independent first Used calls create exactly one event and preserve the first identity and timestamp", async () => {
   const f = await knowledgeFixture();
   try {
-    const asset = await f.asset({ title: "concurrent Used" }); await f.index.synchronize();
+    const asset = await f.asset({ title: "concurrent Used" });
     const read = await f.service.read({ capabilityIds: [], assetId: asset.assetId });
     const source = JSON.stringify({ capabilityIds: [], readRef: read.readRef });
     const results = await Promise.all(Array.from({ length: 8 }, () => runKnowledgeWriter(f.options,

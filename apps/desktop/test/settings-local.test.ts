@@ -134,7 +134,7 @@ test("AI overrides are strict; reset changes only AI and stages the default port
     assert.deepEqual(await readFile(dataPaths(original.dataDirectory).workspaceConfigPath), workspace);
     assert.deepEqual(await readFile(dataPaths(original.dataDirectory).databasePath), database);
     assert.deepEqual(f.calls, []);
-    assert.equal(reset.storageVersion, 1); assert.equal(reset.runtime.nodeVersion, "v24.21.0");
+    assert.equal(reset.storageVersion, 2); assert.equal(reset.runtime.nodeVersion, "v24.21.0");
   } finally { await f.cleanup(); }
 });
 
@@ -200,7 +200,8 @@ test("diagnostics exports bounded safe logs and metadata as private JSON, exclud
   try {
     const config = await f.config(), paths = dataPaths(config.dataDirectory), marker = "SECRET_KNOWLEDGE_CANDIDATE_PROMPT_AI_OUTPUT";
     await mkdir(join(config.dataDirectory, "logs"), { recursive: true }); await mkdir(join(f.env.userData, "logs"), { recursive: true });
-    await writeFile(join(paths.assetRepositoryPath, "assets/body.md"), marker); await writeFile(join(paths.assetRepositoryPath, "inbox/body.md"), marker);
+    // Append private fixture data after the SQLite header; diagnostics must never read the database body.
+    await writeFile(paths.databasePath, Buffer.concat([await readFile(paths.databasePath), Buffer.from(marker)]));
     await writeFile(paths.logPath, JSON.stringify({ event: "HOOK_CONTEXT_UNAVAILABLE", errorMessage: marker, stack: marker }));
     const build = await readBuildInfo(f.runtime);
     const safe = { event: "backend-ready", at: "2026-09-24T00:00:00.000Z", startedAt: "2026-09-24T00:00:00.000Z", mainPid: 1, buildId: build.buildId };

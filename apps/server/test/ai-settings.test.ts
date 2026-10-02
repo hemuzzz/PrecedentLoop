@@ -85,9 +85,9 @@ test("test request uses the real restricted Codex runner with a fake executable 
   await writeFile(f.configPath, JSON.stringify({ providers: [{ id: "codex", executable, timeoutMs: 2000 }] }));
   const ai = new AiService(f.service, { configPath: f.configPath });
   try {
-    const before = await snapshot(f.options.repositoryPath), database = await readFile(f.options.databasePath);
+    const database = await readFile(f.options.databasePath);
     const result = await ai.test({ provider: "codex" }); assert.equal(result.success, true); assert.ok(result.durationMs >= 0);
-    assert.deepEqual(await snapshot(f.options.repositoryPath), before); assert.deepEqual(await readFile(f.options.databasePath), database);
+    assert.deepEqual(await readFile(f.options.databasePath), database);
     assert.equal(await ai.status(), null);
     const entries = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { args: string[]; cwd: string });
     const args = entries.at(-1)!.args;
@@ -107,13 +107,13 @@ test("test request uses restricted Claude parameters, a temporary policy and no 
   await writeFile(f.configPath, JSON.stringify({ providers: [{ id: "claude", executable, timeoutMs: 2000 }] }));
   const ai = new AiService(f.service, { configPath: f.configPath, runner: input => runAiCli({ ...input, claudePolicy: { managedDirectory: join(f.root, "managed"), claudeDirectory: join(f.root, "claude"), checkSystemPolicy: async () => {} } }) });
   try {
-    const before = await snapshot(f.options.repositoryPath), database = await readFile(f.options.databasePath);
+    const database = await readFile(f.options.databasePath);
     assert.equal((await ai.test({ provider: "claude" })).success, true);
     const args = JSON.parse((await readFile(log, "utf8")).trim().split("\n").at(-1)!) as string[];
     for (const flag of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands", "mcp__*"]) assert.ok(args.includes(flag), flag);
     assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]!), { disableAllHooks: true, autoMemoryEnabled: false });
     assert.equal(args[args.indexOf("--tools") + 1], ""); assert.equal(args[args.indexOf("--mcp-config") + 1], '{"mcpServers":{}}');
-    assert.deepEqual(await snapshot(f.options.repositoryPath), before); assert.deepEqual(await readFile(f.options.databasePath), database);
+    assert.deepEqual(await readFile(f.options.databasePath), database);
   } finally { await ai.close(); await f.cleanup(); }
 });
 

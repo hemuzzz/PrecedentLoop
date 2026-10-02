@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { detectAgent } from "./agent-detection.js";
 import { appConfigSchema, dataPaths, readAppConfig, readBuildInfo, serializeAppConfig, writeAppConfig, type AppConfig } from "./config.js";
-import { copyDataDirectory, ensureMarker, initializeStorage, inspectDataDirectory, pathsOverlap, prepareDirectoryLayout, readStorageVersion, rebindCoordination, type DataDirectoryInspection } from "./data-directory.js";
+import { copyDataDirectory, ensureMarker, initializeStorage, inspectDataDirectory, pathsOverlap, prepareDirectoryLayout, readStorageVersion, type DataDirectoryInspection } from "./data-directory.js";
 import { backendFailureMode, determineStartupMode, type StartupMode } from "./startup.js";
 import { readSetupState, setupDraftSchema, writeSetupState } from "./setup-state.js";
 import type { AgentDetection, AgentName, CoreCheck, DirectoryCheck, PreparationProgress, PreparationStep, PrepareRequest, SettingsSnapshot, SetupDraft, SetupSnapshot, SetupStateFile } from "./setup-contract.js";
@@ -33,20 +33,9 @@ export async function chooseSetupPort(available = portAvailable): Promise<number
 }
 const inner = (inspection: DataDirectoryInspection) => inspection.kind === "SYNC_RISK" ? inspection.inspection : inspection;
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
-async function markdownCount(directory: string): Promise<number> {
-  let count = 0;
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory()) count += await markdownCount(join(directory, entry.name));
-    else if (entry.isFile() && entry.name.endsWith(".md")) count++;
-    // Never follow symlinks into other locations while computing optional statistics.
-  }
-  return count;
-}
 async function statistics(path: string): Promise<NonNullable<DirectoryCheck["statistics"]>> {
   const result: NonNullable<DirectoryCheck["statistics"]> = {};
   const paths = dataPaths(path);
-  try { result.assets = await markdownCount(join(paths.assetRepositoryPath, "assets")); } catch { /* Optional. */ }
-  try { result.candidates = await markdownCount(join(paths.assetRepositoryPath, "inbox")); } catch { /* Optional. */ }
   try {
     const value: unknown = JSON.parse(await readFile(paths.workspaceConfigPath, "utf8"));
     if (typeof value === "object" && value !== null && "workspaces" in value && Array.isArray(value.workspaces)) result.workspaces = value.workspaces.length;
@@ -321,7 +310,7 @@ export class SetupService {
     else if (mode === "migrate" && !["MISSING", "EMPTY"].includes(kind)) reason = kind === "NOT_WRITABLE" ? `无法写入所选位置：${(inner(inspection) as { reason: string }).reason}` : "迁移目标必须是不存在或空的目录；已有知识库请使用“关联其他数据目录”。";
     else if (mode === "associate" && kind !== "PRODUCT") {
       const checked = inner(inspection);
-      reason = `${"reason" in checked ? `${checked.reason}。` : ""}请选择基线版本 1 的已有本产品数据目录；关联不会创建或覆盖文件。`;
+      reason = `${"reason" in checked ? `${checked.reason}。` : ""}请选择基线版本 2 的已有本产品数据目录；关联不会创建或覆盖文件。`;
     }
     const plan: DataMovePlan = { planId: reason ? null : randomUUID(), mode, from, to, syncRisk: inspection.kind === "SYNC_RISK",
       statistics: reason ? {} : await statistics(mode === "migrate" ? from : to), reason };
@@ -350,7 +339,6 @@ export class SetupService {
       try {
         if (plan.mode === "migrate") {
           Object.assign(result, await copyDataDirectory(plan.from, plan.to));
-          await rebindCoordination(plan.to, this.dependencies.runtime);
         }
         await writeAppConfig(this.dependencies.userData, next);
       } catch (error) {
@@ -550,7 +538,7 @@ export class SetupService {
     const status = config ? await this.dependencies.backendStatus(config).catch(() => ({ serviceReady: false, mcpReady: false })) : { serviceReady: false, mcpReady: false };
     return [
       { id: "directory", ok: usable, detail: usable ? config!.dataDirectory : "数据目录不可用，请返回本地数据步骤查看原因。" },
-      { id: "storage", ok: usable, detail: usable ? "基线版本 1 · 存储已就绪" : "存储未就绪，请选择基线版本 1 的数据目录；新目录需先初始化。" },
+      { id: "storage", ok: usable, detail: usable ? "基线版本 2 · 存储已就绪" : "存储未就绪，请选择基线版本 2 的数据目录；新目录需先初始化。" },
       runtime,
       { id: "service", ok: status.serviceReady, detail: status.serviceReady ? "服务已启动 · 索引已就绪" : "本地服务与索引尚未就绪，请重试或打开日志。" },
       { id: "mcp", ok: status.serviceReady && status.mcpReady, detail: config ? `http://127.0.0.1:${config.port}/mcp` : "等待服务" },
@@ -592,7 +580,7 @@ export class SetupService {
   }
   async selectRecoveryDirectory(path: string): Promise<SetupSnapshot> {
     if (this.startup.mode !== "RECOVERY") throw new Error("仅恢复模式允许关联新的位置。");
-    if (inner(await inspectDataDirectory(path, this.dependencies.home)).kind !== "PRODUCT") throw new Error("请选择基线版本 1 的已有本产品数据目录，不会创建或覆盖文件。");
+    if (inner(await inspectDataDirectory(path, this.dependencies.home)).kind !== "PRODUCT") throw new Error("请选择基线版本 2 的已有本产品数据目录，不会创建或覆盖文件。");
     await this.dependencies.stopBackend();
     this.backendDirectory = undefined;
     const previous = await readAppConfig(this.dependencies.userData);

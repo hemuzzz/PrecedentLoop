@@ -1,6 +1,8 @@
 import { initializeDatabase } from "../src/storage/schema.js";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { AssetRepository } from "../src/asset/asset-repository.js";
+import { CandidateRepository } from "../src/asset/candidate-repository.js";
+import { openDatabase } from "../src/storage/schema.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,14 +12,12 @@ import test from "node:test";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 
 import {
-  AssetIndexManager,
   AssetNotAccessibleError,
   AssetSearchInputError,
   AssetSearchService,
   buildFtsAndQuery,
   escapeFtsLiteral,
   normalizeAssetSearchQuery,
-  scanAssetFiles,
   type AssetScope,
   type AssetType,
 } from "../src/asset/index.js";
@@ -49,13 +49,10 @@ test("passes Golden Query across FTS, LITERAL, HYBRID, Workspace isolation, and 
   const globalId = idGenerator.next("ast");
   const alphaId = idGenerator.next("ast");
   const betaId = idGenerator.next("ast");
-  const manager = await AssetIndexManager.create(fixture);
-  let refreshCount = 0;
 
   try {
     await writeAsset(
-      fixture.repositoryPath,
-      "assets/global/memories/global.md",
+      fixture,
       assetSource({
         body: [
           "充值回调必须保持幂等处理并避免并发重复。",
@@ -71,8 +68,7 @@ test("passes Golden Query across FTS, LITERAL, HYBRID, Workspace isolation, and 
       }),
     );
     await writeAsset(
-      fixture.repositoryPath,
-      "assets/workspaces/alpha/documents/alpha.md",
+      fixture,
       assetSource({
         body: [
           "资金结算、发票申请和事务边界。",
@@ -88,8 +84,7 @@ test("passes Golden Query across FTS, LITERAL, HYBRID, Workspace isolation, and 
       }),
     );
     await writeAsset(
-      fixture.repositoryPath,
-      "assets/workspaces/beta/memories/beta.md",
+      fixture,
       assetSource({
         body: "其他 Workspace 的共享检索、资金结算与充值回调，不得越权返回。",
         id: betaId,
@@ -100,15 +95,8 @@ test("passes Golden Query across FTS, LITERAL, HYBRID, Workspace isolation, and 
         workspace: "beta",
       }),
     );
-    await manager.synchronize();
 
-    const service = new AssetSearchService({
-      ...fixture,
-      refreshIndex: async () => {
-        refreshCount += 1;
-        await manager.synchronize();
-      },
-    });
+    const service = new AssetSearchService(fixture);
     try {
       assertSearch(await service.search({ context: { authorizedWorkspaces: [] }, query: "充值回调" }), [globalId], "FTS");
       assertSearch(await service.search({ context: { authorizedWorkspaces: [] }, query: "充值" }), [globalId], "LITERAL");
@@ -186,18 +174,17 @@ test("passes Golden Query across FTS, LITERAL, HYBRID, Workspace isolation, and 
       );
 
       const read = await service.read({ assetId: alphaId, context: { authorizedWorkspaces: ["alpha"] } });
-      assert.equal(read.frontmatter.id, alphaId);
-      assert.match(read.markdown, /Spring Transaction/);
+      assert.equal(read.assetId, alphaId);
+      assert.match(read.bodyMarkdown, /Spring Transaction/);
       await assert.rejects(
-        service.read({ assetId: alphaId, context: { authorizedWorkspaces: [] } }),
+        async () => service.read({ assetId: alphaId, context: { authorizedWorkspaces: [] } }),
         AssetNotAccessibleError,
       );
       await assert.rejects(
-        service.read({ assetId: betaId, context: { authorizedWorkspaces: ["alpha"] } }),
+        async () => service.read({ assetId: betaId, context: { authorizedWorkspaces: ["alpha"] } }),
         AssetNotAccessibleError,
       );
-      assert.equal((await service.read({ assetId: globalId, context: { authorizedWorkspaces: ["alpha"] } })).frontmatter.id, globalId);
-      assert.equal(refreshCount, 0);
+      assert.equal((await service.read({ assetId: globalId, context: { authorizedWorkspaces: ["alpha"] } })).assetId, globalId);
 
       const literalTimes = await measureSearch(service, { authorizedWorkspaces: ["alpha"] }, "资金 结算", 20);
       const hybridTimes = await measureSearch(service, { authorizedWorkspaces: ["alpha"] }, "Spring 事务", 20);
@@ -214,14 +201,13 @@ test("passes Golden Query across FTS, LITERAL, HYBRID, Workspace isolation, and 
       service.close();
     }
   } finally {
-    await manager.close();
+    fixture.db.close();
     await rm(fixture.rootPath, { force: true, recursive: true });
   }
 });
 
 test("orders literal and FTS field tiers before the Asset ID tie-breaker", async () => {
   const fixture = await createFixture();
-  const manager = await AssetIndexManager.create(fixture);
   const literalAssets = [
     { body: "ordinary", id: idGenerator.next("ast"), summary: "ordinary", title: "资金 结算" },
     { body: "ordinary", id: idGenerator.next("ast"), summary: "ordinary", title: "资金 结算规则" },
@@ -239,16 +225,11 @@ test("orders literal and FTS field tiers before the Asset ID tie-breaker", async
   try {
     for (const [index, asset] of [...literalAssets, ...ftsAssets].entries()) {
       await writeAsset(
-        fixture.repositoryPath,
-        `assets/global/memories/rank-${index}.md`,
+        fixture,
         assetSource({ ...asset, scope: "GLOBAL", type: "MEMORY" }),
       );
     }
-    await manager.synchronize();
-    const service = new AssetSearchService({
-      ...fixture,
-      refreshIndex: () => manager.synchronize(),
-    });
+    const service = new AssetSearchService(fixture);
     try {
       assert.deepEqual(
         (await service.search({ context: { authorizedWorkspaces: [] }, query: "资金 结算" })).map(({ assetId }) => assetId),
@@ -262,135 +243,28 @@ test("orders literal and FTS field tiers before the Asset ID tie-breaker", async
       service.close();
     }
   } finally {
-    await manager.close();
+    fixture.db.close();
     await rm(fixture.rootPath, { force: true, recursive: true });
   }
 });
 
-test("reads current Markdown, skips stale results, and triggers index invalidation", async () => {
+test("reads current database content and excludes logically deleted assets immediately", async () => {
   const fixture = await createFixture();
   const assetId = idGenerator.next("ast");
-  const assetPath = "assets/global/memories/stale.md";
-  const manager = await AssetIndexManager.create(fixture);
-  let refreshCount = 0;
-
+  const service = new AssetSearchService(fixture);
   try {
-    await writeAsset(
-      fixture.repositoryPath,
-      assetPath,
-      assetSource({ body: "stale original content", id: assetId, scope: "GLOBAL", type: "MEMORY" }),
-    );
-    await manager.synchronize();
-    const service = new AssetSearchService({
-      ...fixture,
-      refreshIndex: async () => {
-        refreshCount += 1;
-        await manager.synchronize();
-      },
-    });
-
-    try {
-      await writeAsset(
-        fixture.repositoryPath,
-        assetPath,
-        assetSource({ body: "fresh replacement content", id: assetId, scope: "GLOBAL", type: "MEMORY" }),
-      );
-      assert.deepEqual(await service.search({ context: { authorizedWorkspaces: [] }, query: "stale original" }), []);
-      assert.equal(refreshCount, 1);
-      assert.equal(service.diagnostics().some(({ code }) => code === "STALE_INDEX"), true);
-      assertSearch(
-        await service.search({ context: { authorizedWorkspaces: [] }, query: "fresh replacement" }),
-        [assetId],
-        "FTS",
-      );
-
-      await writeAsset(
-        fixture.repositoryPath,
-        assetPath,
-        assetSource({ body: "read always returns newest Markdown", id: assetId, scope: "GLOBAL", type: "MEMORY" }),
-      );
-      const currentRead = await service.read({ assetId, context: { authorizedWorkspaces: [] } });
-      assert.match(currentRead.markdown, /read always returns newest Markdown/);
-      assert.equal(currentRead.contentHash, managerHashFromMarkdown(currentRead.markdown));
-      assert.equal(refreshCount, 2);
-
-      await writeAsset(fixture.repositoryPath, assetPath, "# invalid current file\n");
-      await assert.rejects(
-        service.read({ assetId, context: { authorizedWorkspaces: [] } }),
-        AssetNotAccessibleError,
-      );
-      assert.equal(refreshCount, 3);
-      assert.equal(manager.status().catalogCount, 0);
-      assert.equal(service.diagnostics().some(({ code }) => code === "CURRENT_ASSET_INVALID"), true);
-      assert.deepEqual(await service.search({ context: { authorizedWorkspaces: [] }, query: "newest" }), []);
-
-      const deletedId = idGenerator.next("ast");
-      const deletedPath = "assets/global/documents/deleted.md";
-      await writeAsset(
-        fixture.repositoryPath,
-        deletedPath,
-        assetSource({ body: "deleted search candidate", id: deletedId, scope: "GLOBAL", type: "DOCUMENT" }),
-      );
-      await manager.synchronize();
-      assertSearch(
-        await service.search({ context: { authorizedWorkspaces: [] }, query: "deleted search" }),
-        [deletedId],
-        "FTS",
-      );
-      await rm(join(fixture.repositoryPath, deletedPath));
-      assert.deepEqual(await service.search({ context: { authorizedWorkspaces: [] }, query: "deleted search" }), []);
-      assert.equal(refreshCount, 4);
-      assert.equal(manager.status().catalogCount, 0);
-    } finally {
-      service.close();
-    }
-  } finally {
-    await manager.close();
-    await rm(fixture.rootPath, { force: true, recursive: true });
-  }
+    await writeAsset(fixture, assetSource({ id: assetId, body: "stale original content", scope: "GLOBAL", type: "MEMORY" }));
+    await writeAsset(fixture, assetSource({ id: assetId, body: "fresh replacement content", scope: "GLOBAL", type: "MEMORY" }));
+    assert.deepEqual(await service.search({ context: { authorizedWorkspaces: [] }, query: "stale original" }), []);
+    assertSearch(await service.search({ context: { authorizedWorkspaces: [] }, query: "fresh replacement" }), [assetId], "FTS");
+    const current = service.read({ assetId, context: { authorizedWorkspaces: [] } });
+    assert.equal(current.bodyMarkdown, "fresh replacement content");
+    assert.equal(current.version, 1);
+    fixture.writes.write("delete", "delete", assetId, () => { fixture.assets.delete(assetId); return {}; });
+    assert.throws(() => service.read({ assetId, context: { authorizedWorkspaces: [] } }), { code: "ASSET_NOT_FOUND" });
+    assert.deepEqual(await service.search({ context: { authorizedWorkspaces: [] }, query: "fresh replacement" }), []);
+  } finally { service.close(); fixture.db.close(); await rm(fixture.rootPath, { recursive: true, force: true }); }
 });
-
-test("validates only selected Catalog paths and rejects path traversal", async () => {
-  const fixture = await createFixture();
-  const selectedPath = "assets/global/memories/selected.md";
-  const excludedPath = "assets/workspaces/beta/memories/excluded.md";
-
-  try {
-    await writeAsset(
-      fixture.repositoryPath,
-      selectedPath,
-      assetSource({ body: "selected", id: idGenerator.next("ast"), scope: "GLOBAL", type: "MEMORY" }),
-    );
-    await writeAsset(
-      fixture.repositoryPath,
-      excludedPath,
-      assetSource({
-        body: "excluded",
-        id: idGenerator.next("ast"),
-        scope: "WORKSPACE",
-        type: "MEMORY",
-        workspace: "beta",
-      }),
-    );
-
-    const selected = await scanAssetFiles({ ...fixture, relativePaths: [selectedPath] });
-    assert.deepEqual(selected.assets.map(({ relativePath }) => relativePath), [selectedPath]);
-    assert.equal(selected.diagnostics.length, 0);
-
-    const unsafe = await scanAssetFiles({ ...fixture, relativePaths: ["../outside.md"] });
-    assert.deepEqual(unsafe.assets, []);
-    assert.deepEqual(unsafe.diagnostics.map(({ code }) => code), ["INVALID_ASSET_PATH"]);
-  } finally {
-    await rm(fixture.rootPath, { force: true, recursive: true });
-  }
-});
-
-interface Fixture {
-  databasePath: string;
-  repositoryPath: string;
-  rootPath: string;
-  workspaceConfigPath: string;
-}
 
 interface AssetSourceOptions {
   body: string;
@@ -402,43 +276,27 @@ interface AssetSourceOptions {
   workspace?: string;
 }
 
-async function createFixture(): Promise<Fixture> {
+async function createFixture() {
   const rootPath = await mkdtemp(join(tmpdir(), "precedent-loop-n05-"));
-  const repositoryPath = join(rootPath, "asset-repository");
   const workspaceConfigPath = join(rootPath, "workspaces.json");
-  const databasePath = join(rootPath, "data", "precedent-loop.sqlite");
-  await mkdir(join(repositoryPath, "assets"), { recursive: true });
-  await writeFile(
-    workspaceConfigPath,
-    JSON.stringify({
-      schemaVersion: 1,
-      workspaces: [
-        { name: "alpha", paths: ["/workspace/alpha"] },
-        { name: "beta", paths: ["/workspace/beta"] },
-      ],
-    }),
-    "utf8",
-  );
+  const databasePath = join(rootPath, "data.sqlite");
+  await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [
+    { name: "alpha", paths: ["/workspace/alpha"] }, { name: "beta", paths: ["/workspace/beta"] },
+  ] }));
   initializeDatabase(databasePath);
-  return { databasePath, repositoryPath, rootPath, workspaceConfigPath };
+  const db = openDatabase(databasePath);
+  return { databasePath, rootPath, workspaceConfigPath, db, assets: new AssetRepository(db), writes: new CandidateRepository(db) };
 }
 
-function assetSource(options: AssetSourceOptions): string {
-  const fields = [`id: ${options.id}`, `type: ${options.type}`, `scope: ${options.scope}`];
-  if (options.workspace !== undefined) {
-    fields.push(`workspace: ${options.workspace}`);
-  }
-  fields.push(
-    `title: ${options.title ?? `${options.type} title`}`,
-    `summary: ${options.summary ?? `${options.type} summary`}`,
-  );
-  return ["---", ...fields, "---", options.body, ""].join("\n");
-}
+function assetSource(options: AssetSourceOptions) { return options; }
 
-async function writeAsset(repositoryPath: string, relativePath: string, source: string): Promise<void> {
-  const absolutePath = join(repositoryPath, relativePath);
-  await mkdir(dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, source, "utf8");
+async function writeAsset(fixture: Awaited<ReturnType<typeof createFixture>>, source: AssetSourceOptions): Promise<void> {
+  const content = { assetId: source.id, type: source.type, scope: source.scope, workspace: source.workspace ?? null,
+    title: source.title ?? `${source.type} title`, summary: source.summary ?? `${source.type} summary`, bodyMarkdown: source.body };
+  fixture.writes.write(idGenerator.next("tsk"), "accept", source.id, () => {
+    const current = fixture.assets.get(source.id);
+    return current ? fixture.assets.revise(source.id, current.version, content) : fixture.assets.insert(content);
+  });
 }
 
 function assertSearch(
@@ -479,8 +337,4 @@ function median(values: readonly number[]): number {
 
 function round(value: number): number {
   return Number(value.toFixed(3));
-}
-
-function managerHashFromMarkdown(markdown: string): string {
-  return createHash("sha256").update(Buffer.from(markdown, "utf8")).digest("hex");
 }

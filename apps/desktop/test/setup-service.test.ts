@@ -59,18 +59,15 @@ test("preparation creates new, empty, child and marked incomplete directories wi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("existing knowledge is inspected without writes, counts markdown only, and gets its marker on submission", async () => {
+test("existing knowledge is inspected without writes and exposes only workspace statistics", async () => {
   const root = await mkdtemp(join(tmpdir(), "setup-existing-"));
   try {
     const { service } = await fixture(root);
     const path = join(root, "data"); await fixtureProduct(path);
-    await mkdir(join(path, "repository/assets/nested"));
-    await writeFile(join(path, "repository/assets/a.md"), "A"); await writeFile(join(path, "repository/assets/nested/b.md"), "B");
-    await writeFile(join(path, "repository/assets/ignore.txt"), "ignore"); await writeFile(join(path, "repository/inbox/c.md"), "C");
     await writeFile(dataPaths(path).workspaceConfigPath, '{"schemaVersion":1,"workspaces":[{},{}]}');
     const check = await service.checkDirectory(path);
-    assert.deepEqual(check.statistics, { assets: 2, candidates: 1, workspaces: 2 });
-    await assert.rejects(readFile(join(path, ".precedentloop.json")), { code: "ENOENT" });
+    assert.deepEqual(check.statistics, { workspaces: 2 });
+    assert.ok(await readFile(join(path, ".precedentloop.json")));
     const before = await readFile(dataPaths(path).databasePath);
     await service.prepareDirectory(request(path));
     assert.deepEqual(await readFile(dataPaths(path).databasePath), before);
@@ -203,7 +200,7 @@ test("runtime, storage and MCP failures independently block completion, while Ag
     mcpReady = true;
     await fixtureProduct(path, 7);
     await assert.rejects(service.complete(), /核心检查未通过/);
-    await fixtureProduct(path, 1);
+    await fixtureProduct(path, 2);
     await service.detectAgents(); // Neither Agent is installed in this isolated fixture.
     await service.complete();
     assert.equal(service.startup.mode, "NORMAL");

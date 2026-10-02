@@ -7,7 +7,7 @@ import { candidateFixture } from "../test-support/candidate-fixture.js";
 import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { WorkspaceCapabilityService } from "../src/workspace/capability.js";
 import { readCodexProjects } from "../src/workspace/codex-project-parser.js";
-import { loadWorkspaceConfig } from "../src/asset/scanner.js";
+import { loadWorkspaceConfig } from "../src/workspace/config.js";
 
 test("selected desktop imports bind exact config bytes and reject unlisted paths inside the repository lock", async () => {
   const f = await candidateFixture();
