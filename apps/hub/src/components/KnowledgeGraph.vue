@@ -141,7 +141,8 @@ function stopDrag() { drag = undefined; dragging.value = false; }
 function wheel(event: WheelEvent) {
   if (event.ctrlKey || event.metaKey) {
     const rect = viewport.value!.getBoundingClientRect();
-    zoom(Math.exp(-event.deltaY * .008), event.clientX - rect.left, event.clientY - rect.top);
+    const delta = Math.max(-20, Math.min(20, event.deltaY));
+    zoom(Math.exp(-delta * .008), event.clientX - rect.left, event.clientY - rect.top);
   } else { camera.x -= event.deltaX; camera.y -= event.deltaY; }
 }
 function keyboard(event: KeyboardEvent) {
