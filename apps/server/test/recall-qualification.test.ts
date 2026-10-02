@@ -8,39 +8,32 @@ const inaccessibleError = (error: unknown) => error instanceof assets.AssetNotAc
   || error instanceof assets.AssetNotFoundError
   || (error instanceof KnowledgeError && error.code === "ASSET_NOT_ACCESSIBLE");
 
-const scenarios = ["alpha-beta", "global-beta-alpha", "global-beta-null", "document", "skill", "deleted", "invalid", "symlink", "updated", "global"] as const;
+const scenarios = ["alpha-beta", "global-beta-alpha", "global-beta-null", "document", "skill", "deleted", "updated", "global"] as const;
 for (const scenario of scenarios) {
-  test(`F03 ${scenario}: Recall and both Read targets requalify current files and preserve historical facts`, async () => {
+  test(`F03 ${scenario}: Recall and both Read targets qualify current database rows and preserve historical facts`, async () => {
     const f = await knowledgeFixture();
     try {
       const workspace = scenario.startsWith("global") ? null : "alpha";
       const capabilityIds = scenario === "global-beta-null" ? [] : [f.alpha];
       const asset = await f.asset({ title: "f03match OLD_PRIVATE_TITLE", workspace, summary: "OLD_PRIVATE_SUMMARY" });
       const sibling = await f.asset({ title: "f03match Legal sibling", summary: "LEGAL_SIBLING_SUMMARY" });
-      await f.index.synchronize();
+
       const initial = await f.service.recall({ capabilityIds, queries: ["f03match"] });
       const reference = initial.items.find(item => item.assetId === asset.assetId)!;
       const read = await f.service.read({ capabilityIds, recallItemId: reference.recallItemId });
       const before = f.rows();
-      let currentPath = asset.path, currentSource = asset.source;
-      if (scenario === "deleted") await unlink(asset.path);
-      else if (scenario === "invalid") await writeFile(asset.path, "---javascript\ninvalid\n---\n");
-      else if (scenario === "symlink") {
-        const outside = join(f.root, "outside.md");
-        await rename(asset.path, outside); await symlink(outside, asset.path);
-      } else if (scenario === "updated" || scenario === "global") {
-        currentSource = asset.source.replace("OLD_PRIVATE_TITLE", "Current allowed title").replace("OLD_PRIVATE_SUMMARY", "CURRENT_ALLOWED_SUMMARY");
-        await writeFile(asset.path, currentSource);
+      let currentSource = "CURRENT_BODY";
+      if (scenario === "deleted") f.remove(asset.assetId);
+      else if (scenario === "updated" || scenario === "global") {
+        f.revise(asset.assetId, { title: "f03match Current allowed title", summary: "CURRENT_ALLOWED_SUMMARY", bodyMarkdown: currentSource });
       } else {
         const type = scenario === "document" ? "DOCUMENT" : scenario === "skill" ? "SKILL" : "MEMORY";
         const nextWorkspace = type === "MEMORY" ? "beta" : "alpha";
-        currentPath = join(f.options.repositoryPath, "assets", "workspaces", nextWorkspace, type === "DOCUMENT" ? "documents" : type === "SKILL" ? "skills" : "memories", "moved.md");
-        currentSource = ["---", `id: ${asset.assetId}`, `type: ${type}`, "scope: WORKSPACE", `workspace: ${nextWorkspace}`,
-          `title: f03match ${type === "MEMORY" ? "BETA_PRIVATE_MARKER" : "Allowed reference"}`,
-          `summary: ${type === "MEMORY" ? "BETA_PRIVATE_MARKER" : "REFERENCE_ONLY_SUMMARY"}`, "---", "CURRENT_BODY", ""].join("\n");
-        await unlink(asset.path); await mkdir(dirname(currentPath), { recursive: true }); await writeFile(currentPath, currentSource);
+        f.revise(asset.assetId, { title: `f03match ${type === "MEMORY" ? "BETA_PRIVATE_MARKER" : "Allowed reference"}`,
+          summary: type === "MEMORY" ? "BETA_PRIVATE_MARKER" : "REFERENCE_ONLY_SUMMARY", bodyMarkdown: currentSource });
+        // Simulate a changed authorization boundary in the authoritative row.
+        f.repository.db.prepare("UPDATE asset SET asset_type=?,asset_scope='WORKSPACE',workspace=? WHERE asset_id=?").run(type, nextWorkspace, asset.assetId);
       }
-      if (!["deleted", "invalid", "symlink"].includes(scenario)) await f.index.synchronize();
       const inaccessible = ["alpha-beta", "global-beta-alpha", "global-beta-null", "deleted", "invalid", "symlink"].includes(scenario);
       if (inaccessible) {
         for (const target of [{ assetId: asset.assetId }, { recallItemId: reference.recallItemId }]) {
@@ -56,7 +49,7 @@ for (const scenario of scenarios) {
         assert.deepEqual(f.rows(), before);
         const current = await f.service.read({ capabilityIds, assetId: asset.assetId });
         assert.equal(current.markdown, currentSource);
-        assert.notEqual(current.contentHash, reference.contentHash);
+        assert.notEqual(current.version, reference.version);
       }
       const beforeRecall = f.rows();
       const recall = await f.service.recall({ capabilityIds, queries: ["f03match"] });
@@ -70,7 +63,7 @@ for (const scenario of scenarios) {
       }
       if (scenario === "updated" || scenario === "global") assert.match(JSON.stringify(recall), /CURRENT_ALLOWED_SUMMARY/u);
       const after = f.rows();
-      for (const table of ["workspace_capability", "read_operation", "used_event", "asset_content_version"]) assert.deepEqual(after[table], beforeRecall[table]);
+      for (const table of ["workspace_capability", "read_operation", "used_event"]) assert.deepEqual(after[table], beforeRecall[table]);
       assert.equal(after.recall_operation!.length, beforeRecall.recall_operation!.length + 1);
       assert.equal(after.recall_item!.length, beforeRecall.recall_item!.length + recall.items.length);
       assert.deepEqual(after.recall_operation!.slice(0, -1), beforeRecall.recall_operation);
@@ -80,35 +73,36 @@ for (const scenario of scenarios) {
   });
 }
 
-test("F03 Recall uses qualified Read metadata even when Catalog metadata changes after that Read", async t => {
+test("F03 Recall uses qualified Read metadata even when database metadata changes after that Read", async t => {
   const f = await knowledgeFixture();
   try {
     const asset = await f.asset({ title: "f03match", summary: "CURRENT_ALLOWED_SUMMARY" });
-    await f.index.synchronize();
+
     const read = f.search.read.bind(f.search);
-    t.mock.method(f.search, "read", async (input: Parameters<typeof read>[0]) => {
-      const result = await read(input);
-      f.repository.db.prepare("UPDATE asset_catalog SET title=?, summary=? WHERE asset_id=?").run("FORBIDDEN_CATALOG_TITLE", "FORBIDDEN_CATALOG_SUMMARY", asset.assetId);
+    f.repository.db.pragma("busy_timeout=0");
+    t.mock.method(f.search, "read", (input: Parameters<typeof read>[0]) => {
+      const result = read(input);
+      assert.throws(() => f.repository.db.prepare("UPDATE asset SET title=?, summary=? WHERE asset_id=?").run("FORBIDDEN_CATALOG_TITLE", "FORBIDDEN_CATALOG_SUMMARY", asset.assetId), { code: "SQLITE_BUSY" });
       return result;
     });
     const recall = await f.service.recall({ capabilityIds: [], queries: ["f03match"] });
     assert.equal(recall.items[0]!.title, "f03match"); assert.equal(recall.items[0]!.summary, "CURRENT_ALLOWED_SUMMARY");
     assert.doesNotMatch(JSON.stringify(recall), /FORBIDDEN_CATALOG/u);
-    assert.equal(f.repository.item(recall.items[0]!.recallItemId!)!.contentHash, recall.items[0]!.contentHash);
+    assert.equal(f.repository.item(recall.items[0]!.recallItemId!)!.version, recall.items[0]!.version);
   } finally { await f.close(); }
 });
 
 test("F03 configuration and database faults propagate without fallback to stored content", async () => {
   const f = await knowledgeFixture();
   try {
-    await f.asset({ title: "f03match" }); await f.index.synchronize();
+    await f.asset({ title: "f03match" });
     const before = f.rows();
     await writeFile(f.options.workspaceConfigPath, "invalid");
     await assert.rejects(f.service.recall({ capabilityIds: [], queries: ["f03match"] }), { code: "WORKSPACE_CONFIG_UNAVAILABLE" });
     assert.deepEqual(f.rows(), before);
     await writeFile(f.options.workspaceConfigPath, JSON.stringify(f.config));
-    f.repository.db.exec("DROP TABLE asset_catalog");
-    await assert.rejects(f.service.recall({ capabilityIds: [], queries: ["f03match"] }), { code: "ASSET_INDEX_UNAVAILABLE" });
+    f.repository.db.exec("DROP TABLE asset_fts");
+    await assert.rejects(f.service.recall({ capabilityIds: [], queries: ["f03match"] }), /no such table/);
     assert.deepEqual(f.rows(), before);
   } finally { await f.close(); }
 });
@@ -118,7 +112,7 @@ test("U04 an oversized qualified title is omitted while a legal sibling and all 
   try {
     const oversized = await f.asset({ title: "f03match " + "过长标题".repeat(1500), summary: "QUALIFIED_BUT_OVERSIZED" });
     const sibling = await f.asset({ title: "f03match", summary: "LEGAL_SIBLING_SUMMARY" });
-    await f.index.synchronize();
+
     const read = await f.service.read({ capabilityIds: [], assetId: oversized.assetId });
     const before = f.rows();
     const result = await f.service.recall({ capabilityIds: [], queries: ["f03match"] });

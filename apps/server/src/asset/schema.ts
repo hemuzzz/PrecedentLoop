@@ -14,34 +14,12 @@ const idGenerator: IdGenerator = new SnowflakeIdGenerator();
 export const assetIdSchema = z
   .string()
   .refine((id) => idGenerator.validate(id, "ast"), "id must be a valid ast-prefixed ID");
+export const candidateIdSchema = z.string().refine(id => idGenerator.validate(id, "cnd"), "id must be a valid cnd-prefixed ID");
 
 const requiredTextSchema = z
   .string()
   .min(1)
   .refine((value) => value.trim().length > 0, "must contain non-whitespace text");
-
-const commonFrontmatterShape = {
-  id: assetIdSchema,
-  summary: requiredTextSchema,
-  title: requiredTextSchema,
-  type: assetTypeSchema,
-};
-
-export const assetFrontmatterSchema = z.discriminatedUnion("scope", [
-  z
-    .object({
-      ...commonFrontmatterShape,
-      scope: z.literal("GLOBAL"),
-    })
-    .strict(),
-  z
-    .object({
-      ...commonFrontmatterShape,
-      scope: z.literal("WORKSPACE"),
-      workspace: requiredTextSchema,
-    })
-    .strict(),
-]);
 
 export const workspaceNameSchema = requiredTextSchema
   .refine((name) => name === name.trim(), "workspace name must not have surrounding whitespace")
@@ -92,5 +70,4 @@ export const workspaceConfigSchema = z
 
 export type AssetType = z.infer<typeof assetTypeSchema>;
 export type AssetScope = z.infer<typeof assetScopeSchema>;
-export type AssetFrontmatter = z.infer<typeof assetFrontmatterSchema>;
 export type WorkspaceConfig = z.infer<typeof workspaceConfigSchema>;

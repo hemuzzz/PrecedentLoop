@@ -1,11 +1,9 @@
-import { join } from "node:path";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import { z } from "zod";
 import { assetIdSchema, assetTypeSchema } from "./schema.js";
-import { candidateSelectionSchema, contentFieldsSchema, contentHashSchema, matchesTarget, requestIdSchema, type CandidateBatchResult, type CandidateService, type CandidateTarget } from "./candidate-service.js";
-import { scanFormalAssets } from "./confirmation.js";
-import { RepositoryOperationError, withRepositoryAccess } from "./coordination.js";
-import { inputHash } from "./file-transaction.js";
+import { candidateSelectionSchema, contentFieldsSchema, versionSchema, inputHash, matchesTarget, requestIdSchema, type CandidateBatchResult, type CandidateService, type CandidateTarget } from "./candidate-service.js";
+import { RepositoryOperationError } from "./errors.js";
+import { loadWorkspaceConfigSync } from "../workspace/config.js";
 import { capabilityIdsSchema } from "../knowledge/model.js";
 import type { WorkspaceCapabilityService } from "../workspace/capability.js";
 import { checkStructuredContent, checkRelatedAssets } from "./structured-candidate-checks.js";
@@ -44,11 +42,11 @@ export const evidenceFields = {
 export const evidenceSchema = z.array(z.object(evidenceFields).strict().refine(value => value.kind !== "EXCERPT" || value.processing !== undefined, { path: ["processing"], message: "摘录必须标明处理方式" })).optional().describe("必要历史依据；区分事实、推断和示例，不编造材料。");
 export const candidatePrepareInputSchema = z.object({
   capabilityIds: capabilityIdsSchema.max(1).describe("目标范围：[] 为全局，恰好一个能力为对应工作区。只有同时满足“换一个业务不同的项目仍能直接使用”和“不提本项目的名称、路径、业务术语也能完整表述”时才用全局；拿不准就用工作区；两边都沾时拆成两条候选。"),
-  reviewedCandidateIds: z.array(candidateSelectionSchema.shape.candidateId).optional().describe("已逐条比对的待审候选编号，必须覆盖 REVIEW_REQUIRED 清单中的全部候选；只在内容能独立成立时带此字段重试。"),
+  reviewedCandidateIds: z.array(candidateSelectionSchema.shape.candidateId).optional().describe("已逐条比对的待审候选业务 ID（cnd…），必须覆盖 REVIEW_REQUIRED 清单中的全部 candidateId；只在内容能独立成立时带此字段重试。"),
   type: assetTypeSchema.describe("默认 MEMORY 保存判断；已验证可重复流程用 SKILL；参考资料用 DOCUMENT。"),
   title: text.max(300).describe("知识标题，明确独立可复用的主题。"),
   summary: text.max(4000).describe("摘要与结论一致，保留关键前提。"),
-  revision: z.object({ assetId: assetIdSchema.describe("待修订正式知识的 ID。"), baselineHash: contentHashSchema.describe("召回或读取返回的 contentHash。") }).strict().optional().describe("修订时同时提供 assetId 与 baselineHash；不填表示新增。"),
+  revision: z.object({ assetId: assetIdSchema.describe("待修订正式知识的 ID。"), baseVersion: versionSchema.describe("召回或读取返回的 version。") }).strict().optional().describe("修订时同时提供 assetId 与 baseVersion；不填表示新增。"),
   ...fields,
   evidence: evidenceSchema,
   related: z.array(z.object({ assetId: assetIdSchema.describe("当前正式知识 ID，仅允许目标范围或 GLOBAL。"), relation: text.describe("用一句话说明与本候选的关系。") }).strict()).optional().describe("库内相关知识，服务端核对当前资格与范围并填入标题。"),
@@ -71,8 +69,8 @@ export function normalizeStructuredContent(input: StructuredContent): Structured
 
 export const candidateUpdateInputSchema = z.object({
   capabilityIds: capabilityIdsSchema.max(1).describe("必须对应被修改候选的范围：全局候选传 []，工作区候选恰好传该工作区的能力。"),
-  candidateId: candidateSelectionSchema.shape.candidateId.describe("要修改的待审候选编号。"),
-  candidateHash: contentHashSchema.describe("REVIEW_REQUIRED 附正文清单项中的 candidateHash，或 candidate_prepare／candidate_update 返回的 contentHash；缺少正文或 problem: true 的清单项不提供 Hash。"),
+  candidateId: candidateSelectionSchema.shape.candidateId.describe("要修改的待审候选业务 ID（cnd…）；number 仅用于显示候选 #N。"),
+  candidateVersion: versionSchema.describe("REVIEW_REQUIRED 附正文清单项中的 candidateVersion，或 candidate_prepare／candidate_update 返回的 version；"),
   title: contentFieldsSchema.shape.title.describe("修改后的完整标题。"),
   summary: contentFieldsSchema.shape.summary.describe("修改后的完整摘要，与正文结论一致。"),
   bodyMarkdown: contentFieldsSchema.shape.bodyMarkdown.describe("修改后的完整正文，不含 Frontmatter；保留仍然成立的结论、条件和依据。"),
@@ -82,22 +80,14 @@ export const candidateUpdateInputSchema = z.object({
 export const candidateReviewInstruction = "逐条比对以上待审候选：已覆盖就不写，本轮评估记为 NO_INCREMENT 并写明候选编号；与某条属于同一主题（补充、更正或推翻其结论），就用 candidate_update 修改那条候选，范围须与那条候选相符；主题不同、能独立成立，才带 reviewedCandidateIds 重新调用 candidate_prepare。";
 
 export function pendingCandidateComparison(pending: Awaited<ReturnType<CandidateService["pendingCandidates"]>>) {
-  let remaining = 30_000;
-  let omittedBodies = 0;
-  const pendingCandidates = pending.map(({ record, asset }) => {
-    if (!asset) return { candidateId: record.candidateId, assetId: record.assetId,
-      reviewBucket: record.reviewBucket, problem: true as const };
-    const item = { candidateId: record.candidateId, assetId: asset.frontmatter.id,
-      type: asset.frontmatter.type, scope: asset.frontmatter.scope,
-      workspace: asset.frontmatter.scope === "WORKSPACE" ? asset.frontmatter.workspace : null,
-      reviewBucket: record.reviewBucket, title: asset.frontmatter.title, summary: asset.frontmatter.summary };
-    const bodyLength = [...asset.content].length;
-    if (omittedBodies > 0 || bodyLength > remaining) {
-      omittedBodies++;
-      return { ...item, bodyOmitted: true as const };
-    }
-    remaining -= bodyLength;
-    return { ...item, bodyMarkdown: asset.content, candidateHash: asset.contentHash };
+  let remaining = 30_000; let omittedBodies = 0;
+  const pendingCandidates = pending.map(({ record }) => {
+    const item = { candidateId: record.candidateId, number: record.number, assetId: record.assetId, type: record.type,
+      scope: record.scope, workspace: record.workspace, status: record.status, title: record.title, summary: record.summary };
+    const length = [...record.bodyMarkdown].length;
+    if (omittedBodies > 0 || length > remaining) { omittedBodies++; return { ...item, bodyOmitted: true as const }; }
+    remaining -= length;
+    return { ...item, bodyMarkdown: record.bodyMarkdown, candidateVersion: record.version };
   });
   return { pendingCandidates, omittedBodies };
 }
@@ -123,7 +113,7 @@ export function renderStructuredCandidate(input: StructuredContent, related: Arr
   }).join("\n\n"));
   if (input.type === "MEMORY") section("再次使用时的核验点", input.recheckPoints);
   section("相关知识", related.map(item => `${item.title}（${item.assetId}）：${item.relation}`).join("\n\n"));
-  if (input.type === "MEMORY" && input.revision) section("本次变更说明", `修订自基线 ${input.revision.baselineHash.slice(0, 12)}`);
+  if (input.type === "MEMORY" && input.revision) section("本次变更说明", `修订自基线 ${input.revision.baseVersion}`);
   return sections.join("\n\n");
 }
 
@@ -134,41 +124,34 @@ export async function prepareStructuredCandidate(rawInput: unknown, candidates: 
   const target: CandidateTarget = selection.authorizedWorkspaces.length ? { scope: "WORKSPACE", workspace: selection.authorizedWorkspaces[0]! } : { scope: "GLOBAL" };
   checkStructuredContent({ ...content, related: input.related });
   const requestId = input.requestId ?? new SnowflakeIdGenerator().next("tsk");
-  return withRepositoryAccess(candidates.options.repositoryPath, async () => {
-    // Review acknowledgements are not candidate content and may change on retry.
-    const { reviewedCandidateIds, ...contentInput } = input;
-    const requestInput = { structuredCandidate: { ...contentInput, requestId }, target };
-    const receipt = await candidates.receipt(requestId);
-    let result: CandidateBatchResult;
-    if (receipt) {
-      if (receipt.inputHash !== inputHash({ operation: "prepare", input: requestInput })) {
-        throw new RepositoryOperationError("REQUEST_ID_CONFLICT", "同一请求标识不能用于不同内容");
-      }
-      result = receipt.result as CandidateBatchResult;
-    } else {
-      const pending = await candidates.pendingCandidates();
-      const reviewed = new Set(reviewedCandidateIds);
-      if (pending.some(({ record }) => !reviewed.has(record.candidateId))) {
-        const { pendingCandidates, omittedBodies } = pendingCandidateComparison(pending);
-        return { status: "REVIEW_REQUIRED" as const, instruction: candidateReviewInstruction, pendingCandidates, omittedBodies };
-      }
-      const formal = (await scanFormalAssets(candidates.options)).assets;
-      const related = checkRelatedAssets(input.related ?? [], target, formal);
-      const revisionPath = input.revision ? formal.find(asset => asset.frontmatter.id === input.revision!.assetId)?.relativePath.replace(/^assets\//u, "inbox/") : undefined;
-      const bodyMarkdown = renderStructuredCandidate(content, related, new Date().toISOString());
-      // Stable request input keeps retries independent of generated retention timestamps.
-      result = await candidates.prepare(requestId, [{ type: input.type, title: input.title, summary: input.summary, target, bodyMarkdown,
-        ...(input.revision ? { existingAssetId: input.revision.assetId, baselineHash: input.revision.baselineHash } : {}) }], undefined,
-      { operation: "prepare", requestInput, sourceResults: revisionPath ? [revisionPath] : [] });
-    }
-    const candidate = result.candidates[0]!;
-    // The receipt retains a revision's original path even after later acceptance
-    // or rejection. New candidate paths are fully determined by the generated ID.
-    const relativePath = input.revision ? z.string().parse(result.sourceResults[0]) : `inbox/${target.scope === "GLOBAL" ? "global" : `workspaces/${target.workspace}`}/${input.type === "MEMORY" ? "memories" : input.type === "SKILL" ? "skills" : "documents"}/${candidate.assetId}.md`;
-    const path = join(candidates.options.repositoryPath, relativePath);
-    const display = `**${target.scope === "GLOBAL" ? "GLOBAL" : target.workspace} · 知识候选**\n\n**【标题】** ${input.title}\n\n**【摘要】** ${input.summary}\n\n**【原因】** ${candidate.intent === "NEW" ? "建议新增，提交内容待人工审核" : "建议修订，基于已提供的正式基线"}\n\n[查看完整知识库候选](<${path}>)\n\n请在 Hub 候选管理中审核（接受入库｜修改｜暂存｜拒绝）`;
-    return { ...candidate, requestId, path, display };
-  });
+  const { reviewedCandidateIds, ...contentInput } = input;
+  const requestInput = { structuredCandidate: { ...contentInput, requestId }, target };
+  const receipt = await candidates.receipt(requestId);
+  let result: Awaited<ReturnType<CandidateService["prepare"]>>;
+  if (receipt) {
+    if (receipt.inputHash !== inputHash({ operation: "prepare", input: requestInput })) throw new RepositoryOperationError("REQUEST_ID_CONFLICT", "同一请求标识不能用于不同内容");
+    result = receipt.result as CandidateBatchResult;
+  } else {
+    const related = checkRelatedAssets(input.related ?? [], target, await candidates.formalAssets());
+    result = await candidates.prepare(requestId, [{ type: input.type, title: input.title, summary: input.summary, target,
+      bodyMarkdown: renderStructuredCandidate(content, related, new Date().toISOString()),
+      ...(input.revision ? { existingAssetId: input.revision.assetId, baseVersion: input.revision.baseVersion } : {}) }], {
+      operation: "prepare", requestInput,
+      beforeWrite(repository, assets) {
+        // The review list and related qualification are checked inside the committing transaction.
+        const workspaces = loadWorkspaceConfigSync(candidates.options.workspaceConfigPath).workspaces.map(workspace => workspace.name);
+        checkRelatedAssets(input.related ?? [], target, assets.list(workspaces));
+        const pending = repository.list().filter(record => record.scope === "GLOBAL" || workspaces.includes(record.workspace!)).map(record => ({ record }));
+        if (pending.some(({ record }) => !new Set(reviewedCandidateIds).has(record.candidateId)))
+          return { status: "REVIEW_REQUIRED", instruction: candidateReviewInstruction, ...pendingCandidateComparison(pending) };
+        return undefined;
+      },
+    });
+  }
+  if ("status" in result) return result;
+  const candidate = result.candidates[0]!;
+  const display = `**${target.scope === "GLOBAL" ? "GLOBAL" : target.workspace} · 知识候选**\n\n**【标题】** ${input.title}\n\n**【摘要】** ${input.summary}\n\n**【原因】** ${candidate.intent === "NEW" ? "建议新增，提交内容待人工审核" : "建议修订，基于已提供的正式基线"}\n\n候选 #${candidate.number}，请在 Hub 候选管理中审核（接受入库｜修改｜暂存｜拒绝）`;
+  return { ...candidate, requestId, display };
 }
 
 export async function updateStructuredCandidate(rawInput: unknown, candidates: CandidateService, capabilities: WorkspaceCapabilityService) {
@@ -177,17 +160,17 @@ export async function updateStructuredCandidate(rawInput: unknown, candidates: C
   const target: CandidateTarget = selection.authorizedWorkspaces.length ? { scope: "WORKSPACE", workspace: selection.authorizedWorkspaces[0]! } : { scope: "GLOBAL" };
   const requestId = input.requestId ?? new SnowflakeIdGenerator().next("tsk");
   const requestInput = { candidateUpdate: { ...input, requestId }, target };
-  return withRepositoryAccess(candidates.options.repositoryPath, async () => {
-    const pending = await candidates.pendingCandidates();
-    const candidate = pending.find(({ record }) => record.candidateId === input.candidateId);
-    if (!candidate) throw new RepositoryOperationError("CANDIDATE_NOT_FOUND", "候选不存在");
-    if (!candidate.asset) throw new RepositoryOperationError("CONTENT_HASH_MISMATCH", "候选状态异常，不能修改");
-    if (!matchesTarget(candidate.asset.frontmatter, target)) throw new RepositoryOperationError("CAPABILITY_INVALID", "能力与候选范围不符");
-    const fields = { title: input.title, summary: input.summary, bodyMarkdown: input.bodyMarkdown };
-    checkStructuredContent(fields);
-    const result = await candidates.rewrite({ requestId, candidateId: input.candidateId, candidateHash: input.candidateHash, assetId: candidate.record.assetId }, fields, undefined, requestInput);
-    const path = join(candidates.options.repositoryPath, candidate.record.relativePath);
-    return { candidateId: result.candidateId, assetId: result.assetId, contentHash: result.contentHash, changed: result.changed, requestId, path,
-      display: `已修改候选 #${result.candidateId}，已回到待审，请在 Hub 候选管理中审核` };
-  });
+  const receipt = await candidates.receipt(requestId);
+  if (receipt) {
+    if (receipt.inputHash !== inputHash({ operation: "update", input: requestInput })) throw new RepositoryOperationError("REQUEST_ID_CONFLICT", "同一请求标识不能用于不同内容");
+    const result = receipt.result as Awaited<ReturnType<CandidateService["rewrite"]>>;
+    return { ...result, requestId, display: `已修改候选 #${result.number}，已回到待审，请在 Hub 候选管理中审核` };
+  }
+  const candidate = (await candidates.pendingCandidates()).find(({ record }) => record.candidateId === input.candidateId)?.record;
+  if (!candidate) throw new RepositoryOperationError("CANDIDATE_NOT_FOUND", "候选不存在");
+  if (!matchesTarget(candidate, target)) throw new RepositoryOperationError("CAPABILITY_INVALID", "能力与候选范围不符");
+  const fields = { title: input.title, summary: input.summary, bodyMarkdown: input.bodyMarkdown };
+  checkStructuredContent(fields);
+  const result = await candidates.rewrite({ requestId, candidateId: input.candidateId, candidateVersion: input.candidateVersion, assetId: candidate.assetId }, fields, requestInput, "update");
+  return { ...result, requestId, display: `已修改候选 #${result.number}，已回到待审，请在 Hub 候选管理中审核` };
 }

@@ -8,9 +8,7 @@ import { markdownPresentation } from "../markdown-presentation.js";
 
 const props = defineProps<{ item: InboxItem }>();
 
-// Preview the actual body without the YAML header; the original remains available in full.
-const body = computed(() => props.item.rawMarkdown
-  .replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/, "").trim());
+const body = computed(() => props.item.bodyMarkdown);
 const renderer = new MarkdownIt({ html: false, linkify: false, typographer: false }).use(markdownItCjkFriendly);
 renderer.renderer.rules.fence = (tokens, index) => {
   const token = tokens[index]!;
@@ -22,7 +20,7 @@ renderer.renderer.rules.fence = (tokens, index) => {
 const rendered = computed(() => markdownPresentation(renderer.render(body.value)));
 const copyMessage = ref("");
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
-watch(() => props.item.rawMarkdown, () => { copyMessage.value = ""; });
+watch(() => props.item.bodyMarkdown, () => { copyMessage.value = ""; });
 onBeforeUnmount(() => { if (copyTimer) clearTimeout(copyTimer); });
 async function copyCode(event: MouseEvent): Promise<void> {
   const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-copy-code]") : null;

@@ -1,3 +1,4 @@
+import { seedAssets } from "./seed-built-assets.mjs";
 import { initializeDatabase } from "../dist/storage/schema.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -10,7 +11,6 @@ import { fileURLToPath } from "node:url";
 
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = await mkdtemp(join(tmpdir(), "precedent-loop-n10-hub-build-"));
-const repositoryPath = join(fixtureRoot, "asset-repository");
 const workspaceConfigPath = join(fixtureRoot, "config", "workspaces.json");
 const databasePath = join(fixtureRoot, "data", "precedent-loop.sqlite");
 const assetId = "ast2034512345678901248";
@@ -19,27 +19,16 @@ let child;
 
 try {
   await writeFixture(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [] }));
-  await writeFixture(join(repositoryPath, "assets/global/memories/smoke.md"), [
-    "---",
-    `id: ${assetId}`,
-    "type: MEMORY",
-    "scope: GLOBAL",
-    "title: Hub build smoke Asset",
-    "summary: verifies the built Hub and REST share one origin",
-    "---",
-    "hub-build-token",
-    "",
-  ].join("\n"));
   await mkdir(dirname(databasePath), { recursive: true });
   // Startup never migrates; mirror the explicit offline installation step.
   initializeDatabase(databasePath);
+  seedAssets(databasePath, [{ assetId, type: "MEMORY", scope: "GLOBAL", workspace: null, title: "Hub build smoke Asset", summary: "verifies built Hub and REST share one origin", bodyMarkdown: "hub-build-token" }]);
 
 
   child = spawn(process.execPath, [join(serverRoot, "dist", "main.js")], {
     cwd: serverRoot,
     env: {
       ...process.env,
-      PRECEDENT_LOOP_ASSET_REPOSITORY_PATH: repositoryPath,
       PRECEDENT_LOOP_DATABASE_PATH: databasePath,
       PRECEDENT_LOOP_LOG_PATH: join(fixtureRoot, "logs", "precedent-loop.log"),
       PRECEDENT_LOOP_WORKSPACES_PATH: workspaceConfigPath,
@@ -70,7 +59,7 @@ try {
   assert.equal(list.body.ok, true);
   assert.equal(list.body.data.items[0].assetId, assetId);
   const detail = await fetch(`${origin}/api/assets/${assetId}`).then((response) => response.json());
-  assert.match(detail.data.asset.rawMarkdown, /hub-build-token/u);
+  assert.match(detail.data.asset.bodyMarkdown, /hub-build-token/u);
 
   for (const path of ["/api/not-found", "/assets/missing.js", "/client-route"]) {
     const response = await fetch(`${origin}${path}`);

@@ -11,12 +11,11 @@ import { fixtureProduct, fixtureRuntime } from "./setup-fixture.js";
 
 async function fixture(extra: Partial<SetupDependencies> = {}) {
   const f = await integrationFixture();
-  await fixtureProduct(f.config.dataDirectory, 1, true);
+  await fixtureProduct(f.config.dataDirectory, 2, true);
   await mkdir(join(f.config.dataDirectory, "repository/assets/global/memories"), { recursive: true });
   await writeFile(join(f.config.dataDirectory, "repository/assets/global/memories/a.md"), "# 正式知识\n");
   await mkdir(join(f.config.dataDirectory, "repository/inbox/global/memories"), { recursive: true });
   await writeFile(join(f.config.dataDirectory, "repository/inbox/global/memories/b.md"), "# 候选\n", { mode: 0o600 });
-  await writeFile(join(f.config.dataDirectory, "repository/.candidate-coordination.sqlite"), "coordination fixture");
   await mkdir(join(f.config.dataDirectory, "logs"), { recursive: true });
   await writeFile(join(f.config.dataDirectory, "logs/server.log"), "log\n");
   const runtime = await fixtureRuntime(f.root);
@@ -42,28 +41,21 @@ async function tree(root: string, prefix = ""): Promise<Record<string, string>> 
   return result;
 }
 
-test("migrate copies every file with verification, rebinds coordination, switches config, restarts and keeps the old directory", async () => {
+test("migrate copies every file with verification, switches config, restarts and keeps the old directory", async () => {
   const f = await fixture();
   try {
     const before = await tree(f.source), target = join(f.root, "moved");
     const plan = await f.service.planDataMove("migrate", target);
     assert.equal(plan.reason, null); assert.ok(plan.planId); assert.equal(plan.to, target); assert.equal(plan.syncRisk, false);
-    assert.deepEqual(plan.statistics, { assets: 1, candidates: 1, workspaces: 0 });
+    assert.deepEqual(plan.statistics, { workspaces: 0 });
     const result = await f.service.applyDataMove(plan.planId!, false);
     assert.equal(result.status, "success", result.reason ?? undefined);
     assert.equal(result.files, Object.keys(before).length);
     assert.equal((await f.config()).dataDirectory, target);
     assert.deepEqual(f.calls, ["stop", `start:${target}`, `load:18888:storage`]);
     assert.deepEqual(f.modes, [{ mode: "NORMAL", dataDirectory: target }]);
-    // The old directory is untouched; the copy matches it byte for byte except the
-    // database, which the fixture maintenance CLI rewrites while recording the rebind.
     assert.deepEqual(await tree(f.source), before);
-    const copied = await tree(target), commands = copied["commands.jsonl"];
-    assert.ok(commands !== undefined);
-    assert.deepEqual(Buffer.from(commands, "base64").toString().trim().split("\n").map(line => JSON.parse(line) as unknown), [["rebind-coordination", "--offline"]]);
-    delete copied["commands.jsonl"];
-    for (const [path, content] of Object.entries(before)) if (path !== "runtime/precedent-loop.sqlite") assert.equal(copied[path], content, path);
-    assert.deepEqual(Object.keys(copied).sort(), Object.keys(before).sort());
+    assert.deepEqual(await tree(target), before);
     assert.equal((await stat(join(target, "repository/inbox/global/memories/b.md"))).mode & 0o777, 0o600);
     assert.equal((await f.service.getLocalSettings()).lastDataMove?.status, "success");
     // A plan is single use.
@@ -80,7 +72,7 @@ test("migrate refuses overlapping or non-empty targets, and uses a PrecedentLoop
     }
     // The parent is non-empty, so the target becomes a sibling subfolder, never the parent itself.
     assert.equal((await f.service.planDataMove("migrate", f.root)).to, join(f.root, "PrecedentLoop"));
-    const other = join(f.root, "other-product"); await fixtureProduct(other, 1, true);
+    const other = join(f.root, "other-product"); await fixtureProduct(other, 2, true);
     assert.match((await f.service.planDataMove("migrate", other)).reason ?? "", /关联其他数据目录/);
     const unrelated = join(f.root, "Documents"); await mkdir(unrelated); await writeFile(join(unrelated, "notes.txt"), "mine");
     const plan = await f.service.planDataMove("migrate", unrelated);
@@ -105,17 +97,17 @@ test("a copy failure keeps the original directory in use and restarts the origin
   } finally { await f.cleanup(); }
 });
 
-test("associate switches to an existing baseline-1 directory without copying; other kinds are refused", async () => {
+test("associate switches to an existing baseline-2 directory without copying; other kinds are refused", async () => {
   const f = await fixture();
   try {
     const unsupported = join(f.root, "old"); await fixtureProduct(unsupported, 5, true);
     assert.match((await f.service.planDataMove("associate", unsupported)).reason ?? "", /存储版本 5/);
-    assert.match((await f.service.planDataMove("associate", join(f.root, "empty"))).reason ?? "", /基线版本 1/);
-    const other = join(f.root, "other"); await fixtureProduct(other, 1, true);
+    assert.match((await f.service.planDataMove("associate", join(f.root, "empty"))).reason ?? "", /基线版本 2/);
+    const other = join(f.root, "other"); await fixtureProduct(other, 2, true);
     await mkdir(join(other, "repository/assets/global/memories"), { recursive: true });
     await writeFile(join(other, "repository/assets/global/memories/x.md"), "x"); await writeFile(join(other, "repository/assets/global/memories/y.md"), "y");
     const plan = await f.service.planDataMove("associate", other);
-    assert.equal(plan.reason, null); assert.deepEqual(plan.statistics, { assets: 2, candidates: 0 });
+    assert.equal(plan.reason, null); assert.deepEqual(plan.statistics, {});
     const before = await tree(other);
     const result = await f.service.applyDataMove(plan.planId!, false);
     assert.equal(result.status, "success"); assert.equal(result.files, undefined);

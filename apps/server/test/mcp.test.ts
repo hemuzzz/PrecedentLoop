@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { unlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import test from "node:test";
@@ -8,7 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RecallResult } from "../src/knowledge/model.js";
 import type { KnowledgeService } from "../src/knowledge/service.js";
 import { knowledgeFixture, serveKnowledge, toolData, toolPayload, callTool } from "../test-support/knowledge-fixture.js";
-import { SERVER_ASSET_REPOSITORY_PATH_ENV, ServerConfigurationError, serverConfigurationFromEnvironment } from "../src/runtime.js";
+import { ServerConfigurationError, serverConfigurationFromEnvironment } from "../src/runtime.js";
 
 type ReadResult = Awaited<ReturnType<KnowledgeService["read"]>>;
 type UsedResult = Awaited<ReturnType<KnowledgeService["used"]>>;
@@ -19,7 +18,7 @@ async function fixture() {
   const global = await f.asset({ title: "shared", body: "global-only common guidance" });
   const alphaAsset = await f.asset({ title: "shared", workspace: "alpha", type: "DOCUMENT", body: "alpha-only 中 guidance" });
   const betaAsset = await f.asset({ title: "shared", workspace: "beta", body: "beta-only private guidance" });
-  await f.index.synchronize();
+
   const internalErrors: unknown[] = [];
   const endpoint = await serveKnowledge(f, 0, error => { internalErrors.push(error); });
   const client = await endpoint.connect();
@@ -40,10 +39,10 @@ test("MCP exposes five strict object-root tools and rejects authority overrides 
     assert.deepEqual(definitions.map(tool => tool.name), ["knowledge_recall", "asset_read", "asset_mark_used", "candidate_prepare", "candidate_update"]);
     assert.deepEqual(definitions[0]!._meta, { "anthropic/alwaysLoad": true });
     const properties = [
-      ["capabilityIds", "queries"], ["assetId", "capabilityIds", "expectedContentHash", "recallItemId"],
+      ["capabilityIds", "queries"], ["assetId", "capabilityIds", "expectedVersion", "recallItemId"],
       ["capabilityIds", "readRef", "recallItemId"],
       ["bodyMarkdown", "capabilityIds", "conclusion", "conditions", "coverage", "evidence", "prerequisites", "purpose", "reasons", "recheckPoints", "related", "requestId", "reviewedCandidateIds", "revision", "steps", "stopConditions", "summary", "title", "trigger", "type", "unverified", "verification", "verified"],
-      ["bodyMarkdown", "candidateHash", "candidateId", "capabilityIds", "requestId", "summary", "title"],
+      ["bodyMarkdown", "candidateId", "candidateVersion", "capabilityIds", "requestId", "summary", "title"],
     ];
     definitions.forEach((tool, i) => {
       assert.equal(tool.inputSchema.type, "object");
@@ -79,7 +78,7 @@ test("MCP exposes five strict object-root tools and rejects authority overrides 
   } finally { await f.close(); }
 });
 
-test("MCP capabilities select alpha plus GLOBAL or GLOBAL only; Read returns current bytes and enforces hashes", async () => {
+test("MCP capabilities select alpha plus GLOBAL or GLOBAL only; Read returns current bytes and enforces versions", async () => {
   const f = await fixture();
   try {
     const recall = toolData<RecallResult>(await callTool(f.client, "knowledge_recall", { capabilityIds: [f.alpha], queries: ["shared"] }));
@@ -89,14 +88,14 @@ test("MCP capabilities select alpha plus GLOBAL or GLOBAL only; Read returns cur
     const item = recall.items[0]!;
     const first = toolData<ReadResult>(await callTool(f.client, "asset_read", { capabilityIds: [f.alpha], recallItemId: item.recallItemId }));
     assert.equal(first.markdown, f.alphaAsset.source);
-    assert.equal(first.contentHash, createHash("sha256").update(first.markdown).digest("hex"));
+    assert.equal(first.version, 0);
     const changed = f.alphaAsset.source + "current Markdown replacement\n";
-    await writeFile(f.alphaAsset.path, changed);
+    f.revise(f.alphaAsset.assetId, { bodyMarkdown: changed });
     const current = toolData<ReadResult>(await callTool(f.client, "asset_read", { capabilityIds: [f.alpha], assetId: f.alphaAsset.assetId }));
     assert.equal(current.markdown, changed);
-    assert.equal(current.contentHash, createHash("sha256").update(changed).digest("hex"));
+    assert.equal(current.version, 1);
     const before = f.rows();
-    for (const target of [{ recallItemId: item.recallItemId }, { assetId: item.assetId, expectedContentHash: item.contentHash }]) {
+    for (const target of [{ recallItemId: item.recallItemId }, { assetId: item.assetId, expectedVersion: item.version }]) {
       businessError(await callTool(f.client, "asset_read", { capabilityIds: [f.alpha], ...target }), "CONTENT_CHANGED", f.root);
       assert.deepEqual(f.rows(), before);
     }
@@ -112,7 +111,7 @@ test("MCP business and internal errors are redacted and internal failures invoke
     const before = f.rows();
     businessError(await callTool(f.client, "knowledge_recall", { capabilityIds: [generateWorkspaceCapability()], queries: ["shared"] }), "CAPABILITY_INVALID", f.root);
     businessError(await callTool(f.client, "asset_read", { capabilityIds: [], assetId: idGenerator.next("ast") }), "ASSET_NOT_ACCESSIBLE", f.root);
-    await unlink(f.alphaAsset.path);
+    f.remove(f.alphaAsset.assetId);
     businessError(await callTool(f.client, "asset_read", { capabilityIds: [f.alpha], assetId: f.alphaAsset.assetId }), "ASSET_NOT_ACCESSIBLE", f.root);
     assert.deepEqual(f.rows(), before);
     f.repository.close();
@@ -121,14 +120,12 @@ test("MCP business and internal errors are redacted and internal failures invoke
   } finally { await f.close(); }
 });
 
-test("MCP distinguishes invalid Workspace configuration from unavailable Catalog/FTS", async () => {
+test("MCP distinguishes invalid Workspace configuration from unavailable FTS", async () => {
   const f = await fixture();
   try {
-    f.repository.db.exec("CREATE TRIGGER fail_index BEFORE INSERT ON asset_catalog BEGIN SELECT RAISE(ABORT, 'fixture'); END");
-    await writeFile(f.alphaAsset.path, f.alphaAsset.source + "changed");
-    assert.equal(await f.index.synchronize(), null);
+    f.repository.db.exec("DROP TABLE asset_fts");
     const before = f.rows();
-    businessError(await callTool(f.client, "knowledge_recall", { capabilityIds: [f.alpha], queries: ["shared"] }), "ASSET_INDEX_UNAVAILABLE", f.root);
+    businessError(await callTool(f.client, "knowledge_recall", { capabilityIds: [f.alpha], queries: ["shared"] }), "INTERNAL_ERROR", f.root);
     await writeFile(f.options.workspaceConfigPath, "{invalid");
     businessError(await callTool(f.client, "knowledge_recall", { capabilityIds: [], queries: ["shared"] }), "WORKSPACE_CONFIG_UNAVAILABLE", f.root);
     assert.deepEqual(f.rows(), before);
@@ -139,7 +136,7 @@ test("HTTP clients reconnect after a service restart and fail while it is offlin
   const f = await knowledgeFixture();
   let endpoint = await serveKnowledge(f);
   try {
-    const asset = await f.asset({ title: "restart" }); await f.index.synchronize();
+    const asset = await f.asset({ title: "restart" });
     const client = await endpoint.connect(), port = endpoint.port;
     assert.equal(toolData<ReadResult>(await callTool(client, "asset_read", { capabilityIds: [], assetId: asset.assetId })).assetId, asset.assetId);
     await endpoint.close();
@@ -177,7 +174,7 @@ test("only delivered items and successful Reads write facts; Used is source-idem
   const f = await fixture();
   try {
     for (let i = 0; i < 10; i++) await f.asset({ title: "shared " + i, workspace: "alpha" });
-    await f.index.synchronize();
+
     const recall = toolData<RecallResult>(await callTool(f.client, "knowledge_recall", { capabilityIds: [f.alpha], queries: ["shared"] }));
     assert.equal(recall.items.length, 8);
     assert.deepEqual(f.projection.items("i.recall_id=?", recall.recallId!).map(item => item.assetId), recall.items.map(item => item.assetId));
@@ -245,15 +242,13 @@ test("N07 server configuration requires explicit absolute local data paths", () 
   assert.throws(() => serverConfigurationFromEnvironment({}), ServerConfigurationError);
   assert.throws(
     () => serverConfigurationFromEnvironment({
-      [SERVER_ASSET_REPOSITORY_PATH_ENV]: "relative-assets",
-      PRECEDENT_LOOP_DATABASE_PATH: "/tmp/catalog.sqlite",
+      PRECEDENT_LOOP_DATABASE_PATH: "relative.sqlite",
       PRECEDENT_LOOP_WORKSPACES_PATH: "/tmp/workspaces.json",
     }),
     ServerConfigurationError,
   );
   assert.throws(
     () => serverConfigurationFromEnvironment({
-      [SERVER_ASSET_REPOSITORY_PATH_ENV]: "/tmp/assets",
       PRECEDENT_LOOP_DATABASE_PATH: "/tmp/catalog.sqlite",
       PRECEDENT_LOOP_LOG_PATH: "/tmp/precedent-loop.log",
       PRECEDENT_LOOP_WORKSPACES_PATH: "/tmp/workspaces.json",
@@ -263,14 +258,12 @@ test("N07 server configuration requires explicit absolute local data paths", () 
   );
   assert.deepEqual(
     serverConfigurationFromEnvironment({
-      [SERVER_ASSET_REPOSITORY_PATH_ENV]: "/tmp/assets",
       PRECEDENT_LOOP_DATABASE_PATH: "/tmp/catalog.sqlite",
       PRECEDENT_LOOP_LOG_PATH: "/tmp/precedent-loop.log",
       PRECEDENT_LOOP_WORKSPACES_PATH: "/tmp/workspaces.json",
       PORT: "43100",
     }),
     {
-      assetRepositoryPath: "/tmp/assets",
       databasePath: "/tmp/catalog.sqlite",
       workspaceConfigPath: "/tmp/workspaces.json",
       logPath: "/tmp/precedent-loop.log",

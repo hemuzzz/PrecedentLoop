@@ -8,8 +8,7 @@ import test, { type TestContext } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
-import { AssetCatalog, AssetIndexManager, AssetSearchService } from "../src/asset/index.js";
-import { AssetContentVersionRepository } from "../src/asset/content-version.js";
+import { knowledgeFixture } from "../test-support/knowledge-fixture.js";
 import { compareRankedItems, type RankedSearchItem } from "../src/asset/search.js";
 import { KnowledgeError, type RecallResult } from "../src/knowledge/model.js";
 import { KnowledgeProjection } from "../src/knowledge/projection.js";
@@ -30,40 +29,19 @@ function assertBudget(result: RecallResult): void {
 }
 
 async function fixture(t: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), "codex-multi-recall-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const options = { databasePath: join(root, "data", "knowledge.sqlite"), repositoryPath: join(root, "repository"), workspaceConfigPath: join(root, "workspaces.json") };
-  await mkdir(join(options.repositoryPath, "assets"), { recursive: true });
-  const config = { schemaVersion: 1, workspaces: [
-    { name: "alpha", paths: ["/workspace/alpha"] }, { name: "beta", paths: ["/workspace/beta"] },
-  ] };
-  await writeFile(options.workspaceConfigPath, JSON.stringify(config));
-  initializeDatabase(options.databasePath);
-  const manager = await AssetIndexManager.create(options);
-  const repository = new KnowledgeRepository(options.databasePath);
-  const capabilities = new WorkspaceCapabilityService(repository, options.workspaceConfigPath);
-  // Synthetic host input in an isolated fixture; not evidence of Desktop issuance.
-  const alpha = (await capabilities.issueFromTrustedHost("/workspace/alpha"))[0]!.capabilityId;
-  const beta = (await capabilities.issueFromTrustedHost("/workspace/beta"))[0]!.capabilityId;
-  const search = new AssetSearchService({ ...options, refreshIndex: async () => { await manager.synchronize(); } });
-  const service = new KnowledgeService(repository, capabilities, search, () => {});
-  const projection = new KnowledgeProjection(repository, capabilities, options);
-  t.after(async () => { search.close(); repository.close(); await manager.close(); });
+  const f = await knowledgeFixture();
+  t.after(() => f.close());
+  const seed = f.asset;
   async function asset(title: string, workspace: string | null = "alpha", body = "正文", summary = "摘要") {
-    const assetId = ids.next("ast");
-    const path = join(options.repositoryPath, "assets", workspace ? `workspaces/${workspace}` : "global", "memories", `${assetId}.md`);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, ["---", `id: ${assetId}`, "type: MEMORY", `scope: ${workspace ? "WORKSPACE" : "GLOBAL"}`,
-      ...(workspace ? [`workspace: ${workspace}`] : []), `title: ${JSON.stringify(title)}`, `summary: ${JSON.stringify(summary)}`, "---", body, ""].join("\n"));
-    return { assetId, path };
+    return seed({ title, workspace, body, summary });
   }
-  return { ...options, config, root, manager, repository, capabilities, search, service, projection, alpha, beta, asset };
+  return { ...f, ...f.options, asset };
 }
 
 test("usage and recall projections resolve current titles without dropping unavailable assets or changing historical facts", async t => {
   const f = await fixture(t);
   const asset = await f.asset("使用记录标题");
-  await f.manager.synchronize();
+
   const recall = await f.service.recall({ capabilityIds: [f.alpha], queries: ["使用记录标题"] });
   const initialRecall = (await f.projection.recall(recall.recallId!))!;
   assert.equal(initialRecall.items.length, 1);
@@ -76,17 +54,16 @@ test("usage and recall projections resolve current titles without dropping unava
   assert.ok(initial.items.every(item => item.assetTitle === "使用记录标题" && item.assetWorkspace === "alpha"));
   assert.equal((await f.projection.usage(1, 1)).items[0]!.id, initial.items[1]!.id);
   assert.equal((await f.projection.usage(2, 1)).items.length, 0);
-  await writeFile(asset.path, (await readFile(asset.path, "utf8")).replace("使用记录标题", "更新后的标题"));
+  f.revise(asset.assetId, { title: "更新后的标题" });
   const renamed = await f.projection.usage(0, 20, asset.assetId);
   const renamedRecall = (await f.projection.recall(recall.recallId!))!;
   assert.equal(renamedRecall.items[0]!.assetTitle, "更新后的标题");
   assert.deepEqual({ ...renamedRecall.items[0], assetTitle: "使用记录标题" }, initialRecall.items[0]);
   assert.ok(renamed.items.every(item => item.assetTitle === "更新后的标题"));
-  assert.deepEqual(renamed.items.map(item => item.contentHash), initial.items.map(item => item.contentHash));
-  await writeFile(asset.path, (await readFile(asset.path, "utf8")).replace("更新后的标题", ""));
+  assert.deepEqual(renamed.items.map(item => item.version), initial.items.map(item => item.version));
+  f.remove(asset.assetId);
   const invalidRecall = (await f.projection.recall(recall.recallId!))!;
   assert.equal(invalidRecall.items[0]!.assetTitle, null);
-  await rm(asset.path);
   const removed = await f.projection.usage();
   assert.equal(removed.total, 2);
   assert.ok(removed.items.every(item => item.assetTitle === null));
@@ -104,7 +81,7 @@ test("OR expressions expand aliases while literal phrases, scope, and exact Chin
   const table = await f.asset("sys_dict", null);
   await f.asset("业务字段新增规则");
   await f.asset("业务字典 字典配置 DictConfig sys_dict", "beta");
-  await f.manager.synchronize();
+
   const input = { capabilityIds: [f.alpha], queries: ["业务字典", "  DictConfig  ", "dictconfig", "字典配置", "sys_dict"] };
   const result = await f.service.recall(input);
   assert.deepEqual(result.queries, ["业务字典", "DictConfig", "字典配置", "sys_dict"]);
@@ -136,7 +113,7 @@ test("Recall keeps spaces, punctuation and short expressions literal, even along
   await f.asset("Native", "alpha", "other topic", "Memories");
   await f.asset("KNOWLEDGEXmd customerXfundXorder");
   await f.asset("Native Memories KNOWLEDGE.md 个人", "beta");
-  await f.manager.synchronize();
+
   for (const [query, expected] of [
     ["Native Memories", phrase.assetId], ["Native  Memories", spaced.assetId],
     ["KNOWLEDGE.md", filename.assetId], ["个人", short.assetId],
@@ -161,7 +138,7 @@ test("query operators and wildcard characters are literal data, never a Recall l
   for (const query of ['a|b', 'a AND b', 'a OR b', 'a NOT b', '"quoted"', 'asset*read', 'a_b', 'a%b', '(a)', '[a]', 'a\\b']) {
     const exact = await f.asset(query);
     await f.asset("a b AND OR NOT quoted assetZZread aXb", "beta");
-    await f.manager.synchronize();
+
     const result = await f.service.recall({ capabilityIds: [f.alpha], queries: [query] });
     assert.deepEqual(result.items.map(i => i.assetId), [exact.assetId], query);
     assertBudget(result);
@@ -179,7 +156,7 @@ test("fixed-corpus ablation separates query rewriting, literal phrases, and spli
   const fragment = await f.asset("Native unrelated tooling");
   const irrelevant = await f.asset("园艺记录", "alpha", "个人种花经历");
   await f.asset("KNOWLEDGE.md Native Memories 接入协议 全局规则 个人", "beta");
-  await f.manager.synchronize();
+
   const original = ["个人", "接入协议", "KNOWLEDGE.md", "Native Memories", "全局规则"];
   // search() intentionally retains the pre-change AND semantics for human
   // search. Compare complete eligible candidate sets here, without truncation.
@@ -207,7 +184,7 @@ test("one asset uses its best existing rank, with no synonym score accumulation 
   const strong = await f.asset("DictConfig");
   const weak = await f.asset("普通说明", "alpha", "业务字典 字典配置 DictConfig sys_dict");
   await f.asset("字典配置");
-  await f.manager.synchronize();
+
   const queries = ["业务字典", "dictconfig", "字典配置", "sys_dict"];
   const ranks = new Map<string, RankedSearchItem>();
   for (const query of queries) for (const rank of await f.search.rankedCandidates({ authorizedWorkspaces: ["alpha"] }, query)) {
@@ -226,7 +203,7 @@ test("single-expression Recall uses short literal or whole-expression FTS routes
   const f = await fixture(t);
   const a = await f.asset("Spring 事务", "alpha", 'ID 锁 "quoted" asset*read');
   await f.asset("业务字典", null);
-  await f.manager.synchronize();
+
   for (const query of ["ID", "锁", "Spring 事务", '"quoted"', "asset*read"]) {
     const expected = await f.search.rankedCandidates({ authorizedWorkspaces: ["alpha"] }, query);
     const result = await f.service.recall({ capabilityIds: [f.alpha], queries: [query] });
@@ -252,7 +229,7 @@ test("strict input rejects old query, empty/oversized arrays, control characters
 
 test("all submitted capabilities must remain valid; configuration changes and revocation still reject the whole request", async t => {
   const f = await fixture(t);
-  await f.asset("业务字典"); await f.asset("sys_dict", "beta"); await f.manager.synchronize();
+  await f.asset("业务字典"); await f.asset("sys_dict", "beta");
   const input = { capabilityIds: [f.alpha, f.beta], queries: ["业务字典", "sys_dict"] };
   const result = await f.service.recall(input);
   assert.deepEqual(result.authorizedWorkspaces, ["alpha", "beta"]);
@@ -260,7 +237,7 @@ test("all submitted capabilities must remain valid; configuration changes and re
   await writeFile(f.workspaceConfigPath, JSON.stringify({ ...f.config, workspaces: [f.config.workspaces[0], { name: "beta", paths: ["/changed/beta"] }] }));
   await assert.rejects(f.service.recall(input), rejectsWith("CAPABILITY_INVALID"));
   await writeFile(f.workspaceConfigPath, JSON.stringify(f.config));
-  f.repository.db.prepare("DELETE FROM workspace_capability WHERE capability_key_hash=?").run(createHash("sha256").update(f.beta).digest("hex"));
+  f.repository.revokeCapability(createHash("sha256").update(f.beta).digest("hex"));
   await assert.rejects(f.service.recall(input), rejectsWith("CAPABILITY_INVALID"));
   assert.equal(f.projection.totals().recallOperations, 1);
 });
@@ -268,7 +245,7 @@ test("all submitted capabilities must remain valid; configuration changes and re
 test("all expressions share eight ranked slots, deduplication and one response budget", async t => {
   const f = await fixture(t);
   for (let i = 0; i < 11; i++) await f.asset(`检索 ${i}`, "alpha", i % 2 ? "alphaquery betaquery" : "betaquery");
-  await f.manager.synchronize();
+
   const result = await f.service.recall({ capabilityIds: [f.alpha], queries: ["alphaquery", "betaquery"] });
   assert.equal(result.items.length, 8);
   assert.equal(result.budget.omittedCount, 3);
@@ -280,7 +257,7 @@ test("all expressions share eight ranked slots, deduplication and one response b
 test("large expression metadata and summaries stay within the shared budget, including write-failure delivery", async t => {
   const f = await fixture(t);
   for (let i = 0; i < 10; i++) await f.asset(`dictionary ${i}`, "alpha", "内容", "长摘要😀".repeat(300));
-  await f.manager.synchronize();
+
   const input = { capabilityIds: [f.alpha], queries: ["dictionary", ...Array.from({ length: 7 }, (_, i) => `${i}${'"'.repeat(255)}`)] };
   const result = await f.service.recall(input);
   assertBudget(result);
@@ -292,27 +269,25 @@ test("large expression metadata and summaries stay within the shared budget, inc
   const failed = await f.service.recall(input);
   assertBudget(failed);
   assert.equal(failed.usageRecorded, false); assert.equal(failed.recallId, null);
-  assert.ok(failed.items.every(i => i.recallItemId === null && i.reference.includes("expectedContentHash")));
+  assert.ok(failed.items.every(i => i.recallItemId === null && i.reference.includes("expectedVersion")));
   assert.ok(failed.diagnostics.includes("USAGE_WRITE_FAILED"));
   assert.deepEqual(f.projection.totals(), totals);
   f.repository.db.exec("DROP TRIGGER fail_recall_item");
   assert.equal((await f.service.recall(input)).usageRecorded, true);
 });
 
-test("current file qualification, hash-bound Read, and idempotent Used survive multi-expression delivery", async t => {
+test("current database qualification, version-bound Read, and idempotent Used survive multi-expression delivery", async t => {
   const f = await fixture(t);
   const asset = await f.asset("业务字典 DictConfig");
   const removed = await f.asset("sys_dict");
   const linked = await f.asset("字典配置");
-  await f.manager.synchronize();
-  const raw = await readFile(linked.path);
-  await rm(removed.path); await rm(linked.path);
-  const outside = join(f.root, "outside.md"); await writeFile(outside, raw); await symlink(outside, linked.path);
+
+  f.remove(removed.assetId); f.remove(linked.assetId);
   const result = await f.service.recall({ capabilityIds: [f.alpha], queries: ["业务字典", "dictconfig", "sys_dict", "字典配置"] });
   assert.deepEqual(result.items.map(i => i.assetId), [asset.assetId]);
   const recallItemId = result.items[0]!.recallItemId!;
   const read = await f.service.read({ capabilityIds: [f.alpha], recallItemId });
-  await writeFile(asset.path, (await readFile(asset.path, "utf8")) + "更新正文\n");
+  f.revise(asset.assetId, { bodyMarkdown: "更新正文\n" });
   await assert.rejects(f.service.read({ capabilityIds: [f.alpha], recallItemId }), rejectsWith("CONTENT_CHANGED"));
   assert.equal((await f.service.used({ capabilityIds: [f.alpha], recallItemId })).created, true);
   assert.equal((await f.service.used({ capabilityIds: [f.alpha], readRef: read.readRef })).created, false);
@@ -323,7 +298,7 @@ test("MCP publishes an object-root queries array and returns one serialized resu
   const f = await fixture(t);
   const asset = await f.asset("Native Memories");
   await f.asset("Native tooling and unrelated Memories");
-  await f.manager.synchronize();
+
   const server = createAssetMcpServer({ knowledgeService: f.service, candidateService: new CandidateService(f), capabilities: f.capabilities });
   const client = new Client({ name: "multi-expression-fixture", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -348,13 +323,13 @@ test("MCP publishes an object-root queries array and returns one serialized resu
   const rejected = await client.callTool({ name: "knowledge_recall", arguments: { capabilityIds: [f.alpha], query: "dictconfig" } });
   assert.equal(rejected.isError, true);
   assert.equal(f.projection.totals().recallOperations, 1);
-  const hook = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: "/workspace/alpha" }, f);
+  const hook = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: join(f.root, "alpha") }, f);
   assert.ok(hook?.includes("knowledge_recall")); assert.ok(!hook?.includes("queries"));
-  const captureHook = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: "/workspace/alpha", session_id: "synthetic-session", turn_id: "synthetic-turn" }, { ...f, captureCommand: "/synthetic/capture --record" });
+  const captureHook = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: join(f.root, "alpha"), session_id: "synthetic-session", turn_id: "synthetic-turn" }, { ...f, captureCommand: "/synthetic/capture --record" });
   const context = JSON.parse(captureHook!).hookSpecificOutput.additionalContext as string;
   assert.ok(context.includes('"sessionId":"synthetic-session"'));
   assert.ok(context.includes('"turnId":"synthetic-turn"'));
   assert.ok(context.includes("cat <<'EOF' | /synthetic/capture --record"));
-  const missingIdentity = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: "/workspace/alpha" }, { ...f, captureCommand: "/synthetic/capture --record" });
+  const missingIdentity = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: join(f.root, "alpha") }, { ...f, captureCommand: "/synthetic/capture --record" });
   assert.match(missingIdentity!, /评估标识或命令缺失/);
 });

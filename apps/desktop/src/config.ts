@@ -43,7 +43,6 @@ export function resolveUserData(identity: AppIdentity, appData = join(homedir(),
 export function dataPaths(dataDirectory: string) {
   absolutePath.parse(dataDirectory);
   return {
-    assetRepositoryPath: join(dataDirectory, "repository"),
     databasePath: join(dataDirectory, "runtime/precedent-loop.sqlite"),
     workspaceConfigPath: join(dataDirectory, "config/workspaces.json"),
     logPath: join(dataDirectory, "logs/server.log"),
@@ -123,7 +122,6 @@ export async function inspectNode(nodePath: string): Promise<Omit<BuildInfo, "bu
 export function backendEnvironment(config: RuntimeConfig, appConfigPath?: string): NodeJS.ProcessEnv {
   return { ...nodeEnvironment(),
     ...(appConfigPath ? { PRECEDENT_LOOP_APP_CONFIG_PATH: appConfigPath } : {}),
-    PRECEDENT_LOOP_ASSET_REPOSITORY_PATH: config.assetRepositoryPath,
     PRECEDENT_LOOP_DATABASE_PATH: config.databasePath,
     PRECEDENT_LOOP_WORKSPACES_PATH: config.workspaceConfigPath,
     PRECEDENT_LOOP_LOG_PATH: config.logPath,

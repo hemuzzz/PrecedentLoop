@@ -7,7 +7,6 @@ import { CAPTURE_COMMAND_ENV, hostTurnIdentity } from "./capture-assessment.js";
 import type { HookHost } from "./capture-assessment.js";
 export const HOOK_DATABASE_PATH_ENV = "PRECEDENT_LOOP_DATABASE_PATH";
 export const HOOK_WORKSPACE_CONFIG_PATH_ENV = "PRECEDENT_LOOP_WORKSPACES_PATH";
-export const HOOK_ASSET_REPOSITORY_PATH_ENV = "PRECEDENT_LOOP_ASSET_REPOSITORY_PATH";
 export interface HookRuntimeConfiguration { databasePath?: string; workspaceConfigPath?: string; captureCommand?: string; onError?: (error: unknown) => void }
 export function createUserPromptSubmitHookConfiguration(command: string) {
   return { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command, timeout: 10, additionalContextLimit: 8000 }] }] } };
@@ -39,7 +38,7 @@ export async function handleCodexHook(input: unknown, configuration: HookRuntime
     recallInstruction(host, tool),
     "- 交付工程结果前（完成、阶段性或受阻；澄清、进度和普通交流不算）：",
     `  1. 对实际影响结论的知识，调用 ${tool("asset_mark_used")}。`,
-    `  2. 判断是否有可沉淀的增量。只在方案已冻结或结论已成事实时准备候选，以下两点须同时满足：（1）内容已定：用户已确认的方案与决策（注明实施和验证状态），或已核实的事实、根因、反例、排障方法；讨论中、待用户选择、可能被推翻的分析，备选方案比较，以及阶段性进展都不算。（2）可复用：现有知识和待审候选都没有覆盖，换一次任务仍用得上。方案冻结或结论确定的那一轮，一次性评估整段讨论，同一主题只写一条；已有相关待审候选时，用 ${tool("candidate_update")} 并入。“文档已写”“测试通过”“没搜到”不能单独作为无增量的理由。满足条件且未被要求只读时，调用 ${tool("candidate_prepare")} 准备候选（默认 MEMORY；已验证的可重复流程用 SKILL；参考资料用 DOCUMENT）。候选需要用户在 Hub 中确认后才入库。`,
+    `  2. 判断是否有可沉淀的增量。只在方案已冻结或结论已成事实时准备候选，以下两点须同时满足：（1）内容已定：用户已确认的方案与决策（注明实施和验证状态），或已核实的事实、根因、反例、排障方法；讨论中、待用户选择、可能被推翻的分析，备选方案比较，以及阶段性进展都不算。（2）可复用：现有知识和待审候选都没有覆盖，换一次任务仍用得上。方案冻结或结论确定的那一轮，一次性评估整段讨论，同一主题只写一条；已有相关待审候选时，用 ${tool("candidate_update")} 并入。“文档已写”“测试通过”“没搜到”不能单独作为无增量的理由。满足条件且未被要求只读时，调用 ${tool("candidate_prepare")} 准备候选（默认 MEMORY；已验证的可重复流程用 SKILL；参考资料用 DOCUMENT）。候选需要用户在 Hub 中确认后才入库。candidate_prepare 返回 REVISION_BLOCKED 时，把 display 原样放在最终回复最后；评估记为 FAILED，reason 写明被候选 #N 阻塞。`,
     "  3. 本轮有工具活动时记录评估结果（在最后一次影响结论的工作之后；后续有新工作影响结论时重新记录）：",
   ];
   try {

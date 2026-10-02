@@ -1,3 +1,7 @@
+import { openDatabase } from "../dist/storage/schema.js";
+import { AssetRepository } from "../dist/asset/asset-repository.js";
+import { CandidateRepository } from "../dist/asset/candidate-repository.js";
+import { CandidateService } from "../dist/asset/candidate-service.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -13,7 +17,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = await mkdtemp(join(tmpdir(), "precedent-loop-n13-e2e-"));
-const repositoryPath = join(fixtureRoot, "asset-repository");
 const workspaceConfigPath = join(fixtureRoot, "config", "workspaces.json");
 const databasePath = join(fixtureRoot, "data", "precedent-loop.sqlite");
 const logPath = join(fixtureRoot, "logs", "precedent-loop.log");
@@ -90,9 +93,9 @@ try {
     mkdir(alphaWorkspacePath, { recursive: true }),
     mkdir(betaWorkspacePath, { recursive: true }),
     mkdir(outsideWorkspacePath, { recursive: true }),
-    mkdir(join(repositoryPath, "assets"), { recursive: true }),
   ]);
   await writeWorkspaceConfig();
+  await initializeOffline();
   await Promise.all([
     writeAsset(alphaMemoryRelativePath, alphaMemorySource),
     writeAsset("assets/workspaces/alpha/documents/ablation.md", assetSource({
@@ -158,8 +161,7 @@ try {
       workspace: "unknown",
     })),
   ]);
-  // Startup never migrates; use the compiled offline installation commands.
-  await initializeOffline();
+
 
   child = spawnServer();
   const firstListening = await waitForListening(child);
@@ -184,7 +186,7 @@ try {
 
   const initialInbox = await getRest("/api/inbox");
   assert.equal(initialInbox.items.some(({ assetId }) => assetId === ids.migrationBridge), true);
-  assert.equal(initialInbox.diagnostics.some(({ relativePath }) => relativePath === unrelatedInboxRelativePath), true);
+  assert.equal(initialInbox.items.some(({ assetId }) => assetId === ids.unrelatedInbox), false);
 
   // WorkspaceCapability comes only from the compiled trusted Hook adapter.
   const alphaHook = await runHook(hookInput(alphaWorkspacePath));
@@ -273,60 +275,36 @@ try {
   });
   assert.equal(foreignOrigin.status, 403);
   const status = await getRest("/api/system/status");
-  assert.equal(status.index.indexState, "READY");
-  assert.equal(status.index.watcherState, "RUNNING");
+  assert.equal(status.service.readiness, "READY");
+  assert.equal(status.storage.schemaVersion, 2);
   assert.equal(status.mcpEndpoint.ready, true);
 
   assert.deepEqual(await recall([alphaCapability], "migrationbridge"), []);
-  const migrationHash = createHash("sha256").update(Buffer.from(migrationSource, "utf8")).digest("hex");
-  const confirmation = await runConfirmation(migrationSourceRelativePath, migrationHash);
-  assert.equal(confirmation.code, 0, confirmation.stderr);
-  assert.equal(confirmation.stderr, "");
-  const confirmationBody = JSON.parse(confirmation.stdout);
+  const candidates = new CandidateService({ databasePath, workspaceConfigPath });
+  const pending = (await candidates.list()).items.find(row => row.assetId === ids.migrationBridge);
+  const acceptInput = { requestId: "accept-migration", candidateId: pending.candidateId, assetId: pending.assetId, candidateVersion: pending.version };
+  const confirmationBody = await candidates.accept(acceptInput);
   assert.equal(confirmationBody.assetId, ids.migrationBridge);
-  assert.equal(confirmationBody.sourceRelativePath, migrationSourceRelativePath);
-  assert.equal(confirmationBody.targetRelativePath, migrationTargetRelativePath);
-  await assert.rejects(access(join(repositoryPath, migrationSourceRelativePath)));
-  assert.equal(await readFile(join(repositoryPath, migrationTargetRelativePath), "utf8"), migrationSource);
-  await waitFor(async () =>
-    (await recall([alphaCapability], "migrationbridge"))[0]?.assetId === ids.migrationBridge
-  );
-  assert.match(
-    success(await callTool("asset_read", {
-      capabilityIds: [alphaCapability],
-      assetId: ids.migrationBridge,
-      expectedContentHash: migrationHash,
-    })).markdown,
-    /migrationbridge current Markdown body/u,
-  );
+  assert.equal(confirmationBody.version, 0);
+  assert.equal((await recall([alphaCapability], "migrationbridge"))[0]?.assetId, ids.migrationBridge);
+  assert.match(success(await callTool("asset_read", { capabilityIds: [alphaCapability], assetId: ids.migrationBridge, expectedVersion: 0 })).markdown, /migrationbridge current Markdown body/u);
   assert.equal((await getRest("/api/inbox")).items.some(({ assetId }) => assetId === ids.migrationBridge), false);
   assert.equal((await getRest("/api/assets")).items.some(({ assetId }) => assetId === ids.migrationBridge), true);
-  // A path-only retry after the source moved replays the committed receipt.
-  const repeatedConfirmation = await runConfirmation(migrationSourceRelativePath, migrationHash);
-  assert.equal(repeatedConfirmation.code, 0, repeatedConfirmation.stderr);
-  assert.deepEqual(JSON.parse(repeatedConfirmation.stdout), confirmationBody);
-  assert.equal(await readFile(join(repositoryPath, migrationTargetRelativePath), "utf8"), migrationSource);
-
+  assert.deepEqual(await candidates.accept(acceptInput), confirmationBody);
   await writeAsset(rejectedSourceRelativePath, rejectedSource);
-  const rejected = await runConfirmation(rejectedSourceRelativePath, "0".repeat(64));
-  assert.equal(rejected.code, 2);
-  assert.equal(JSON.parse(rejected.stderr).error.code, "CONTENT_HASH_MISMATCH");
-  assert.equal(await readFile(join(repositoryPath, rejectedSourceRelativePath), "utf8"), rejectedSource);
-  await assert.rejects(access(join(repositoryPath, rejectedTargetRelativePath)));
-
-  const lifecycleModified = lifecycleSource.replaceAll("lifecycleoriginal", "lifecyclemodified");
+  const rejected = (await candidates.list()).items.find(row => row.assetId === ids.rejectedCandidate);
+  await assert.rejects(candidates.accept({ requestId: "reject-stale", candidateId: rejected.candidateId, assetId: rejected.assetId, candidateVersion: 99 }), { code: "VERSION_CONFLICT" });
+  assert.equal((await candidates.list()).items.find(row => row.assetId === rejected.assetId).bodyMarkdown, rejectedSource.body);
+  const lifecycleModified = { ...lifecycleSource, body: lifecycleSource.body.replaceAll("lifecycleoriginal", "lifecyclemodified"), summary: "lifecyclemodified" };
   await writeAsset(lifecycleRelativePath, lifecycleModified);
-  await waitFor(async () => (await recall([], "lifecyclemodified"))[0]?.assetId === ids.lifecycle);
-  await writeAsset(lifecycleRelativePath, "# invalid without Frontmatter\n");
-  await waitFor(async () => (await recall([], "lifecyclemodified")).length === 0);
-  const lifecycleRepaired = lifecycleSource.replaceAll("lifecycleoriginal", "lifecyclerepaired");
+  assert.equal((await recall([], "lifecyclemodified"))[0]?.assetId, ids.lifecycle);
+  const lifecycleRepaired = { ...lifecycleSource, body: lifecycleSource.body.replaceAll("lifecycleoriginal", "lifecyclerepaired"), summary: "lifecyclerepaired" };
   await writeAsset(lifecycleRelativePath, lifecycleRepaired);
-  await waitFor(async () => (await recall([], "lifecyclerepaired"))[0]?.assetId === ids.lifecycle);
+  assert.equal((await recall([], "lifecyclerepaired"))[0]?.assetId, ids.lifecycle);
 
-  const catalogCountBeforeInvalidConfig = (await getRest("/api/system/status")).index.catalogCount;
   await writeFixture(workspaceConfigPath, "{invalid");
   await waitFor(async () => (await getRest("/api/system/status")).service.readiness === "DEGRADED");
-  assert.equal((await getRest("/api/system/status")).index.catalogCount, catalogCountBeforeInvalidConfig);
+  assert.equal((await getRest("/api/system/status")).storage.formalAssetCount, null);
   assert.equal((await fetch(`${origin}/api/assets`)).status, 503);
   assert.equal(errorCode(await callTool("knowledge_recall", { capabilityIds: [alphaCapability], queries: ["sharedsearch"] })),
     "WORKSPACE_CONFIG_UNAVAILABLE");
@@ -343,23 +321,14 @@ try {
   await writeWorkspaceConfig();
   await waitFor(async () => (await recall([betaCapability], "n13ablation"))[0]?.assetId === ids.betaMemory);
 
-  await rm(join(repositoryPath, lifecycleRelativePath));
-  await waitFor(async () => (await recall([], "lifecyclerepaired")).length === 0);
-  await writeAsset(lifecycleRelativePath, lifecycleRepaired);
-  await waitFor(async () => (await recall([], "lifecyclerepaired"))[0]?.assetId === ids.lifecycle);
-
-  await rm(join(repositoryPath, alphaMemoryRelativePath));
-  await waitFor(async () =>
-    (await recall([alphaCapability], "sharedsearch")).every(({ assetId }) => assetId !== ids.alphaMemory)
-  );
-  // Read/Used facts outlive the file; the projection only loses the current title.
+  await candidates.delete({ requestId: "delete-lifecycle", assetId: ids.lifecycle });
+  assert.deepEqual(await recall([], "lifecyclerepaired"), []);
+  await candidates.delete({ requestId: "delete-alpha", assetId: ids.alphaMemory });
+  assert.equal((await recall([alphaCapability], "sharedsearch")).some(({ assetId }) => assetId === ids.alphaMemory), false);
   const missingUsage = await getRest(`/api/usage?assetId=${ids.alphaMemory}`);
   assert.equal(missingUsage.total, 2);
   assert.equal(missingUsage.items.every(({ assetTitle }) => assetTitle === null), true);
-  await writeAsset(alphaMemoryRelativePath, alphaMemorySource);
-  await waitFor(async () =>
-    (await recall([alphaCapability], "sharedsearch")).some(({ assetId }) => assetId === ids.alphaMemory)
-  );
+  assert.equal(errorCode(await callTool("asset_mark_used", usedArguments)), "ASSET_NOT_ACCESSIBLE");
 
   await client.close();
   client = undefined;
@@ -370,7 +339,7 @@ try {
   child = spawnServer();
   await waitForListening(child);
   client = await connectClient();
-  assert.equal((await recall([alphaCapability], "sharedsearch")).some(({ assetId }) => assetId === ids.alphaMemory), true);
+  assert.equal((await recall([alphaCapability], "sharedsearch")).some(({ assetId }) => assetId === ids.alphaMemory), false);
   assert.deepEqual((await getRest(`/api/recalls/${ablation.recallId}`)).operation.queries, ["n13ablation"]);
   await client.close();
   client = undefined;
@@ -393,10 +362,10 @@ try {
   assert.equal((await getRest("/api/usage")).total, 0);
   assert.deepEqual((await getRest("/api/recalls")).items, []);
   const rebuiltCapability = parseCapabilities((await runHook(hookInput(alphaWorkspacePath))).stdout)[0].capabilityId;
-  assert.equal((await recall([rebuiltCapability], "sharedsearch")).some(({ assetId }) => assetId === ids.alphaMemory), true);
+  assert.deepEqual(await recall([rebuiltCapability], "sharedsearch"), []);
   const rebuiltStatus = await getRest("/api/system/status");
-  assert.equal(rebuiltStatus.index.indexState, "READY");
-  assert.equal(rebuiltStatus.index.catalogCount >= 8, true);
+  assert.equal(rebuiltStatus.service.readiness, "READY");
+  assert.equal(rebuiltStatus.storage.formalAssetCount, 0);
 
   process.stdout.write(`${JSON.stringify({
     event: "N13_E2E_BUILD_SMOKE",
@@ -407,7 +376,7 @@ try {
     recallId: ablation.recallId,
     confirmedAssetId: ids.migrationBridge,
     restart: "preserved-runtime-data",
-    sqliteRebuild: "explicit-initialization-catalog-restored-runtime-data-cleared",
+    sqliteRebuild: "explicit-initialization-creates-empty-authoritative-database",
   })}\n`);
 } finally {
   await client?.close().catch(() => undefined);
@@ -467,14 +436,6 @@ async function runHook(input) {
   return await runNode(join(serverRoot, "dist", "hook", "user-prompt-submit.js"), [], JSON.stringify(input));
 }
 
-async function runConfirmation(relativePath, expectedContentHash) {
-  return await runNode(join(serverRoot, "dist", "asset", "confirm-cli.js"), [
-    "--relative-path",
-    relativePath,
-    "--expected-content-hash",
-    expectedContentHash,
-  ]);
-}
 
 async function runNode(script, args, stdin = "") {
   const spawned = spawn(process.execPath, [script, ...args], {
@@ -508,7 +469,6 @@ function hookInput(cwd) {
 function runtimeEnvironment() {
   return {
     ...process.env,
-    PRECEDENT_LOOP_ASSET_REPOSITORY_PATH: repositoryPath,
     PRECEDENT_LOOP_DATABASE_PATH: databasePath,
     PRECEDENT_LOOP_LOG_PATH: logPath,
     PRECEDENT_LOOP_WORKSPACES_PATH: workspaceConfigPath,
@@ -526,17 +486,19 @@ async function writeWorkspaceConfig(betaPath = betaWorkspacePath) {
   }));
 }
 
-function assetSource({ body, id, scope, summary, title, type, workspace }) {
-  const fields = [`id: ${id}`, `type: ${type}`, `scope: ${scope}`];
-  if (workspace !== undefined) {
-    fields.push(`workspace: ${workspace}`);
-  }
-  fields.push(`title: ${title}`, `summary: ${summary}`);
-  return ["---", ...fields, "---", body, ""].join("\n");
-}
+function assetSource(value) { return value; }
 
 async function writeAsset(relativePath, source) {
-  await writeFixture(join(repositoryPath, relativePath), source);
+  const db = openDatabase(databasePath);
+  try {
+    const assets = new AssetRepository(db), candidates = new CandidateRepository(db);
+    const content = { assetId: source.id, type: source.type, scope: source.scope, workspace: source.workspace ?? null, title: source.title, summary: source.summary, bodyMarkdown: source.body };
+    candidates.write(idGenerator.next("tsk"), "prepare", source.id, () => {
+      if (relativePath.startsWith("inbox/")) return candidates.insert({ ...content, candidateId: idGenerator.next("cnd"), intent: "NEW", baseVersion: null });
+      const current = assets.get(source.id);
+      return current ? assets.revise(source.id, current.version, content) : assets.insert(content);
+    });
+  } finally { db.close(); }
 }
 
 async function writeFixture(path, source) {

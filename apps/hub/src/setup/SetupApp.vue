@@ -48,7 +48,7 @@ const serviceReady = computed(() => core.value.some(item => item.id === "service
 const allMissing = computed(() => detections.value.length === 2 && detections.value.every(item => !item.found));
 const availableProviders = computed(() => detections.value.filter(item => item.runnable));
 const names: Record<AgentName, string> = { codex: "Codex", claude: "Claude Code" };
-const coreNames: Record<CoreCheck["id"], string> = { directory: "数据目录", storage: "存储", runtime: "运行环境（内置）", service: "本地服务与索引", mcp: "MCP 地址" };
+const coreNames: Record<CoreCheck["id"], string> = { directory: "数据目录", storage: "存储", runtime: "运行环境（内置）", service: "本地服务", mcp: "MCP 地址" };
 const progressNames = { folders: "创建文件夹", storage: "准备存储", service: "启动本地服务" };
 const directoryText = computed(() => {
   if (committed.value) return "知识库已准备好";
@@ -275,7 +275,7 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeIntegration?.(); });
                   <h2>使用已有知识库</h2><p class="setup-help">之前用过 Precedent Loop，选这个。不会复制、移动或覆盖任何文件。</p>
                   <template v-if="dataMode === 'existing'">
                     <div class="setup-path" @click.stop><UiIcon name="folder" /><code>{{ draft.dataDirectory }}</code><button class="setup-button" :disabled="busy" @click="chooseDirectory">选择…</button></div>
-                    <div v-if="checkedCurrent && inspection?.kind === 'PRODUCT'" class="setup-found"><strong>✓ 找到已有知识库</strong><span v-if="directory?.statistics?.assets !== undefined">正式知识 <b>{{ directory.statistics.assets }}</b></span><span v-if="directory?.statistics?.candidates !== undefined">待处理候选 <b>{{ directory.statistics.candidates }}</b></span><span v-if="directory?.statistics?.workspaces !== undefined">工作区 <b>{{ directory.statistics.workspaces }}</b></span><span>存储版本 <b>6</b></span></div>
+                    <div v-if="checkedCurrent && inspection?.kind === 'PRODUCT'" class="setup-found"><strong>✓ 找到已有知识库</strong><span v-if="directory?.statistics?.workspaces !== undefined">工作区 <b>{{ directory.statistics.workspaces }}</b></span><span>存储版本 <b>{{ inspection.storageVersion }}</b></span></div>
                     <p v-else-if="modeMismatch" class="setup-notice warn">所选目录不是 Precedent Loop 知识库。请重新选择，或改为“新建知识库”。</p>
                   </template>
                 </div>
@@ -292,7 +292,7 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeIntegration?.(); });
               </div>
             </template>
             <div v-if="preparing" class="setup-progress" aria-live="polite">
-              <div v-for="key in (['folders', 'storage', 'service'] as const)" :key="key" class="setup-progress-row"><span class="setup-progress-icon" :class="progress.find(item => item.step === key)?.status"><UiIcon :name="progress.find(item => item.step === key)?.status === 'done' ? 'tick' : progress.find(item => item.step === key)?.status === 'failed' ? 'close' : 'refresh'" /></span><div><h2>{{ progressNames[key] }}</h2><p class="setup-help">{{ progress.find(item => item.step === key)?.reason ?? (progress.find(item => item.step === key)?.status === 'done' ? key === 'folders' ? '知识文件、配置与日志目录已准备好' : key === 'storage' ? '基线版本 1 · 存储已就绪' : '本地服务已就绪' : key === 'service' ? '正在等待本地服务与索引就绪…' : '等待中') }}</p></div></div>
+              <div v-for="key in (['folders', 'storage', 'service'] as const)" :key="key" class="setup-progress-row"><span class="setup-progress-icon" :class="progress.find(item => item.step === key)?.status"><UiIcon :name="progress.find(item => item.step === key)?.status === 'done' ? 'tick' : progress.find(item => item.step === key)?.status === 'failed' ? 'close' : 'refresh'" /></span><div><h2>{{ progressNames[key] }}</h2><p class="setup-help">{{ progress.find(item => item.step === key)?.reason ?? (progress.find(item => item.step === key)?.status === 'done' ? key === 'folders' ? '配置与日志目录已准备好' : key === 'storage' ? '存储已就绪' : '本地服务已就绪' : key === 'service' ? '正在等待本地服务就绪…' : '等待中') }}</p></div></div>
               <div v-if="failed" class="setup-notice error"><div>已完成的步骤会保留。可打开日志查看原因后重试。<div class="setup-actions"><button class="setup-button" :disabled="busy" @click="retryPreparation">重试</button><button class="setup-link" @click="perform(async () => { await bridge!.openLogs(); })">打开日志</button></div></div></div>
             </div>
             <template v-else-if="directory && checkedCurrent">

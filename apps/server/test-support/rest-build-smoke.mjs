@@ -1,3 +1,4 @@
+import { seedAssets } from "./seed-built-assets.mjs";
 import { initializeDatabase } from "../dist/storage/schema.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -10,7 +11,6 @@ import { fileURLToPath } from "node:url";
 
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = await mkdtemp(join(tmpdir(), "precedent-loop-rest-build-"));
-const repositoryPath = join(fixtureRoot, "asset-repository");
 const workspaceConfigPath = join(fixtureRoot, "config", "workspaces.json");
 const databasePath = join(fixtureRoot, "data", "precedent-loop.sqlite");
 const workspacePath = join(fixtureRoot, "workspace-alpha");
@@ -24,31 +24,16 @@ try {
     schemaVersion: 1,
     workspaces: [{ name: "alpha", paths: [workspacePath] }],
   }));
-  await writeFixture(
-    join(repositoryPath, "assets/workspaces/alpha/documents/smoke.md"),
-    [
-      "---",
-      `id: ${assetId}`,
-      "type: DOCUMENT",
-      "scope: WORKSPACE",
-      "workspace: alpha",
-      "title: REST build smoke Asset",
-      "summary: verifies compiled read-only REST",
-      "---",
-      "compiled-rest-token",
-      "",
-    ].join("\n"),
-  );
   await mkdir(dirname(databasePath), { recursive: true });
   // Startup never migrates; mirror the explicit offline installation step.
   initializeDatabase(databasePath);
+  seedAssets(databasePath, [{ assetId, type: "DOCUMENT", scope: "WORKSPACE", workspace: "alpha", title: "REST build smoke Asset", summary: "verifies compiled read-only REST", bodyMarkdown: "compiled-rest-token" }]);
 
 
   child = spawn(process.execPath, [join(serverRoot, "dist", "main.js")], {
     cwd: serverRoot,
     env: {
       ...process.env,
-      PRECEDENT_LOOP_ASSET_REPOSITORY_PATH: repositoryPath,
       PRECEDENT_LOOP_DATABASE_PATH: databasePath,
       PRECEDENT_LOOP_LOG_PATH: join(fixtureRoot, "logs", "precedent-loop.log"),
       PRECEDENT_LOOP_WORKSPACES_PATH: workspaceConfigPath,
@@ -76,13 +61,13 @@ try {
     assert.equal(Object.hasOwn(body, "data"), true, path);
   }
   const detail = await fetch(`${origin}/api/assets/${assetId}`).then((response) => response.json());
-  assert.match(detail.data.asset.rawMarkdown, /compiled-rest-token/);
-  assert.match(detail.data.asset.renderedMarkdown, /<p>compiled-rest-token<\/p>/);
+  assert.match(detail.data.asset.bodyMarkdown, /compiled-rest-token/);
+  assert.equal(detail.data.asset.version, 0);
   const workspaces = await fetch(`${origin}/api/workspaces`).then((response) => response.json());
   assert.equal(workspaces.data.items[0].assetCount, 1);
 
   const diff = await fetch(`${origin}/api/assets/${assetId}/diff`).then(response => response.json());
-  assert.deepEqual(diff, { ok: true, data: { diff: { assetId, status: "UNTRACKED" } } });
+  assert.deepEqual(diff, { ok: true, data: { diff: { assetId, status: "NO_PREVIOUS_VERSION" } } });
 
   await expectError(fetch(`${origin}/api/recalls/usg1`), 404, "SOURCE_NOT_FOUND");
   for (const retired of ["/api/task-loadouts", "/api/usages"]) {

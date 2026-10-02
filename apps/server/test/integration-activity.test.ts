@@ -34,7 +34,7 @@ test("real backend records validated MCP initialize only, sanitizes names, and s
   const path = integrationActivityDirectory(f.options.databasePath);
   let server: Awaited<ReturnType<typeof startPrecedentLoopServer>> | undefined;
   async function start() {
-    server = await startPrecedentLoopServer({ ...f.options, assetRepositoryPath: f.options.repositoryPath, port: 0, logPath: join(f.root, "server.log") });
+    server = await startPrecedentLoopServer({ ...f.options, port: 0, logPath: join(f.root, "server.log") });
     const address = server.server.address(); assert.ok(address && typeof address !== "string");
     return `http://127.0.0.1:${address.port}/mcp`;
   }

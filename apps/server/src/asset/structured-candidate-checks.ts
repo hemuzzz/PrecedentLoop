@@ -1,18 +1,18 @@
-import { RepositoryOperationError } from "./coordination.js";
+import { RepositoryOperationError } from "./errors.js";
 import type { CandidateTarget } from "./candidate-service.js";
-import type { ScannedAsset } from "./scanner.js";
+import type { AssetRecord } from "./asset-repository.js";
 import type { StructuredContent } from "./structured-candidate.js";
 
 export class StructuredCandidateError extends RepositoryOperationError {
   constructor(code: string, readonly field: string) { super(code, `${code}: ${field}`); }
 }
-export function checkRelatedAssets(related: Array<{ assetId: string; relation: string }>, target: CandidateTarget, assets: ScannedAsset[]) {
+export function checkRelatedAssets(related: Array<{ assetId: string; relation: string }>, target: CandidateTarget, assets: AssetRecord[]) {
   return related.map((item, index) => {
-    const asset = assets.find(asset => asset.frontmatter.id === item.assetId);
-    if (!asset || (asset.frontmatter.scope !== "GLOBAL" && (target.scope !== "WORKSPACE" || asset.frontmatter.workspace !== target.workspace))) {
+    const asset = assets.find(asset => asset.assetId === item.assetId);
+    if (!asset || (asset.scope !== "GLOBAL" && (target.scope !== "WORKSPACE" || asset.workspace !== target.workspace))) {
       throw new StructuredCandidateError("RELATED_ASSET_INVALID", `related.${index}.assetId`);
     }
-    return { ...item, title: asset.frontmatter.title };
+    return { ...item, title: asset.title };
   });
 }
 export function checkStructuredContent(input: (StructuredContent & { related?: Array<{ assetId: string; relation: string }> | undefined }) | { title: string; summary: string; bodyMarkdown: string }): void {

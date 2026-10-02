@@ -6,7 +6,7 @@ import { runKnowledgeWriter } from "../test-support/knowledge-writer.js";
 test("U03 eight independent Recall/Read/Used writers at a frozen millisecond preserve every usg identity and fact", async () => {
   const f = await knowledgeFixture();
   try {
-    const asset = await f.asset({ title: "identitytoken", body: "current body" }); await f.index.synchronize();
+    const asset = await f.asset({ title: "identitytoken", body: "current body" });
     const outputs = await Promise.all(Array.from({ length: 8 }, () => runKnowledgeWriter(f.options, `
       const recall = await service.recall({ capabilityIds: [], queries: ["identitytoken"] });
       if (!recall.usageRecorded || recall.items.length !== 1) throw new Error("Recall fact missing");

@@ -1,47 +1,35 @@
-import type { AssetContentVersionRepository, ContentVersion } from "./content-version.js";
+import { displayContent } from "./candidate-service.js";
 import type { AssetSearchService } from "./search.js";
 
 export const DIFF_LIMITS = {
   inputBytes: 1024 * 1024, inputLines: 2000,
   workUnits: 1_000_000, outputLines: 4000, outputBytes: 8 * 1024 * 1024,
 } as const;
-export type DiffFailureStatus = "NO_PREVIOUS_VERSION" | "UNTRACKED" | "CONTENT_MISMATCH" |
+export type DiffFailureStatus = "NO_PREVIOUS_VERSION" |
   "UNSUPPORTED_ENCODING" | "INPUT_LIMIT_EXCEEDED" | "WORK_LIMIT_EXCEEDED" | "OUTPUT_LIMIT_EXCEEDED";
 export interface DiffLine { kind: "context" | "add" | "delete"; text: string; eol: "LF" | "CRLF" | "CR" | "NONE" }
 export interface DiffHunk { oldStart: number; newStart: number; oldCount: number; newCount: number; lines: DiffLine[] }
-export interface DiffVersionMetadata { contentHash: string; recordedAt: string; hasUtf8Bom: boolean }
+export interface DiffVersionMetadata { version: number; recordedAt: string; hasUtf8Bom: boolean }
+interface ContentVersion { rawContent: Buffer; version: number; recordedAt: string }
 export type AssetDiffResult = { assetId: string; status: DiffFailureStatus } | {
-  assetId: string; status: "AVAILABLE"; relativePath: string;
+  assetId: string; status: "AVAILABLE";
   previous: DiffVersionMetadata; current: DiffVersionMetadata; hasChanges: boolean; hunks: DiffHunk[];
 };
 type Line = Omit<DiffLine, "kind">;
 
 export class AssetDiffService {
-  constructor(
-    readonly assets: Pick<AssetSearchService, "readLibrary"> & Partial<Pick<AssetSearchService, "snapshot">>,
-    readonly versions: AssetContentVersionRepository,
-  ) {}
-
+  constructor(readonly assets: Pick<AssetSearchService, "readLibrary">) {}
   async get(assetId: string): Promise<AssetDiffResult> {
-    return this.assets.snapshot ? this.assets.snapshot(() => this.getSnapshot(assetId)) : this.getSnapshot(assetId);
-  }
-
-  private async getSnapshot(assetId: string): Promise<AssetDiffResult> {
-    // Same current qualification as detail, before any historical content read.
     const asset = await this.assets.readLibrary(assetId);
-    const rows = this.versions.read(assetId, DIFF_LIMITS.inputBytes);
-    if (typeof rows === "string") return { assetId, status: rows };
-    const current = rows.find(({ status }) => status === "CURRENT");
-    const previous = rows.find(({ status }) => status === "PREVIOUS");
-    if (!current) return { assetId, status: "UNTRACKED" };
-    if (current.contentHash !== asset.contentHash) return { assetId, status: "CONTENT_MISMATCH" };
-    if (!previous) return { assetId, status: "NO_PREVIOUS_VERSION" };
-    return compareContentVersions(assetId, asset.relativePath, previous, current);
+    if (!asset.previousContent) return { assetId, status: "NO_PREVIOUS_VERSION" };
+    return compareContentVersions(assetId,
+      { rawContent: Buffer.from(displayContent(asset.previousContent)), recordedAt: asset.previousContent.updatedAt, version: Math.max(0, asset.version - 1) },
+      { rawContent: Buffer.from(displayContent(asset)), recordedAt: asset.updatedAt, version: asset.version });
   }
 }
 
 export function compareContentVersions(
-  assetId: string, relativePath: string, previous: ContentVersion, current: ContentVersion,
+  assetId: string, previous: ContentVersion, current: ContentVersion,
   limits: Readonly<{ inputBytes: number; inputLines: number; workUnits: number; outputLines: number; outputBytes: number }> = DIFF_LIMITS,
 ): AssetDiffResult {
   const failure = (status: DiffFailureStatus): AssetDiffResult => ({ assetId, status });
@@ -59,7 +47,7 @@ export function compareContentVersions(
   const newLines = splitLines(newText, limits.inputLines);
   if (!oldLines || !newLines) return failure("INPUT_LIMIT_EXCEEDED");
   const response: Extract<AssetDiffResult, { status: "AVAILABLE" }> = {
-    assetId, status: "AVAILABLE", relativePath,
+    assetId, status: "AVAILABLE",
     previous: metadata(previous), current: metadata(current),
     hasChanges: !previous.rawContent.equals(current.rawContent), hunks: [],
   };
@@ -127,6 +115,6 @@ function splitLines(text: string, limit: number): Line[] | undefined {
   return lines.length > limit ? undefined : lines;
 }
 function metadata(version: ContentVersion): DiffVersionMetadata {
-  return { contentHash: version.contentHash, recordedAt: version.recordedAt,
+  return { version: version.version, recordedAt: version.recordedAt,
     hasUtf8Bom: version.rawContent.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])) };
 }

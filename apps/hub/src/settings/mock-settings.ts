@@ -10,7 +10,7 @@ type LocalBridge = Pick<SettingsBridge, "getLocalSettings" | "revealSettingsPath
 /** Loaded only through DEV dynamic imports. All state is in memory. */
 export function createLocalSettingsMock(scenario: string, options: URLSearchParams, integration: Pick<SettingsBridge, "planIntegrations">): LocalBridge {
   const directory = "/Users/alex/PrecedentLoop";
-  const local: LocalSettings = { dataDirectory: directory, paths: { assetRepositoryPath: `${directory}/repository`, databasePath: `${directory}/runtime/precedent-loop.sqlite`, workspaceConfigPath: `${directory}/config/workspaces.json`, logPath: `${directory}/logs/server.log`, desktopLogPath: `${directory}/logs/desktop.log` }, storageVersion: 1,
+  const local: LocalSettings = { dataDirectory: directory, paths: { databasePath: `${directory}/runtime/precedent-loop.sqlite`, workspaceConfigPath: `${directory}/config/workspaces.json`, logPath: `${directory}/logs/server.log`, desktopLogPath: `${directory}/logs/desktop.log` }, storageVersion: 2,
     runtime: { nodeVersion: "v22.16.0", arch: "arm64", modules: "127" }, port: 18888, pendingPort: ["T8-b", "T8-d"].includes(scenario) ? 18889 : null, lastRestart: null, lastDataMove: null };
   let overrides: AiOverrides = {};
   const defaults: AiConfiguration["defaults"] = [{ id: "codex", executable: "/opt/homebrew/bin/codex", timeoutMs: 600000 }, { id: "claude", executable: "/Users/alex/.local/bin/claude", timeoutMs: 600000 }];
@@ -38,9 +38,9 @@ export function createLocalSettingsMock(scenario: string, options: URLSearchPara
     exportDiagnostics: async () => ({ path: "/Users/alex/Desktop/PrecedentLoop-diagnostics.json（演示，未写入）" }),
     planDataMove: async ({ mode }) => {
       const to = mode === "migrate" ? (moveOption === "sync" ? "/Users/alex/Library/CloudStorage/Drive/PrecedentLoop" : "/Volumes/Data/PrecedentLoop") : "/Users/alex/Archive/PrecedentLoop";
-      const reason = moveOption === "invalid" ? (mode === "migrate" ? "迁移目标必须是不存在或空的目录；已有知识库请使用“关联其他数据目录”。" : "请选择存储版本 6 的已有本产品数据目录；关联不会创建或覆盖文件。") : null;
+      const reason = moveOption === "invalid" ? (mode === "migrate" ? "迁移目标必须是不存在或空的目录；已有知识库请使用“关联其他数据目录”。" : "请选择基线版本 2 的已有本产品数据目录；关联不会创建或覆盖文件。") : null;
       movePlan = { planId: reason ? null : crypto.randomUUID(), mode, from: local.dataDirectory, to, syncRisk: moveOption === "sync",
-        statistics: reason ? {} : { assets: 46, candidates: 5, workspaces: 2 }, reason };
+        statistics: reason ? {} : { workspaces: 2 }, reason };
       return structuredClone(movePlan);
     },
     applyDataMove: async ({ planId, syncRiskConfirmed }) => {
@@ -54,7 +54,7 @@ export function createLocalSettingsMock(scenario: string, options: URLSearchPara
           reason: mode === "migrate" ? "迁移完成。旧目录已保留，确认数据无误后可自行删除。（演示）" : "已关联新的数据目录。原知识库文件保留在原位置。（演示）" };
       if (local.lastDataMove.status === "success") {
         local.dataDirectory = to;
-        local.paths = { assetRepositoryPath: `${to}/repository`, databasePath: `${to}/runtime/precedent-loop.sqlite`, workspaceConfigPath: `${to}/config/workspaces.json`, logPath: `${to}/logs/server.log`, desktopLogPath: `${to}/logs/desktop.log` };
+        local.paths = { databasePath: `${to}/runtime/precedent-loop.sqlite`, workspaceConfigPath: `${to}/config/workspaces.json`, logPath: `${to}/logs/server.log`, desktopLogPath: `${to}/logs/desktop.log` };
       }
       return structuredClone(local.lastDataMove);
     },

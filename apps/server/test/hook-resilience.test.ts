@@ -48,11 +48,11 @@ test("F05 the Hook's separate pure Asset reader also uses a short real SQLite lo
   await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [directory] }] }));
   initializeDatabase(databasePath);
   const db = new Database(databasePath);
-  const reader = new AssetSearchService({ databasePath, workspaceConfigPath, repositoryPath: directory, busyTimeoutMs: 100, refreshIndex: async () => undefined });
+  const reader = new AssetSearchService({ databasePath, workspaceConfigPath, busyTimeoutMs: 100 });
   try {
     db.exec("BEGIN EXCLUSIVE");
     const started = performance.now();
-    await assert.rejects(reader.read({ assetId: "ast301", context: { authorizedWorkspaces: [] } }), { code: "SQLITE_BUSY" });
+    assert.throws(() => reader.read({ assetId: "ast301", context: { authorizedWorkspaces: [] } }), { code: "SQLITE_BUSY" });
     assert.ok(performance.now() - started < 1500);
   } finally { reader.close(); db.exec("ROLLBACK"); db.close(); await rm(directory, { recursive: true, force: true }); }
 });

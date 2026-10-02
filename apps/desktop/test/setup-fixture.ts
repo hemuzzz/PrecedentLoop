@@ -7,8 +7,8 @@ import { fixtureExecutor } from "./executor-fixture.js";
 export function sqliteHeader(version: number): Buffer {
   const header = Buffer.alloc(100); header.write("SQLite format 3\0"); header.writeUInt32BE(version, 60); return header;
 }
-export async function fixtureProduct(path: string, version = 1, marker = false): Promise<void> {
-  for (const directory of ["repository/assets", "repository/inbox", "runtime", "config"]) await mkdir(join(path, directory), { recursive: true });
+export async function fixtureProduct(path: string, version = 2, marker = true): Promise<void> {
+  for (const directory of ["runtime", "config"]) await mkdir(join(path, directory), { recursive: true });
   await writeFile(dataPaths(path).databasePath, sqliteHeader(version));
   if (marker) await writeFile(join(path, ".precedentloop.json"), JSON.stringify({ formatVersion: 1, createdAt: new Date().toISOString(), dataId: randomUUID() }));
 }
@@ -23,7 +23,7 @@ export async function fixtureRuntime(root: string): Promise<string> {
     fs.appendFileSync('commands.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');
     if (fs.existsSync('fail-migration')) { console.error('fixture migration failure'); process.exit(3); }
     const header = Buffer.alloc(100); header.write('SQLite format 3\\0');
-    header.writeUInt32BE(1, 60);
+    header.writeUInt32BE(2, 60);
     fs.writeFileSync(process.env.PRECEDENT_LOOP_DATABASE_PATH, header);
   `);
   return runtime;

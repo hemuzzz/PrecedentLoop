@@ -2,30 +2,12 @@ export type AssetType = "MEMORY" | "DOCUMENT" | "SKILL";
 export type AssetScope = "GLOBAL" | "WORKSPACE";
 export type SearchStrategy = "FTS" | "HYBRID" | "LITERAL";
 
-export type AssetFrontmatter =
-  | {
-      id: string;
-      scope: "GLOBAL";
-      summary: string;
-      title: string;
-      type: AssetType;
-    }
-  | {
-      id: string;
-      scope: "WORKSPACE";
-      summary: string;
-      title: string;
-      type: AssetType;
-      workspace: string;
-    };
-
 export interface AssetLibraryItem {
   assetId: string;
   knowledgeNumber: number | null;
-  contentHash: string;
+  version: number;
   matchedSnippet?: string;
-  modifiedAt: string;
-  relativePath: string;
+  updatedAt: string;
   scope: AssetScope;
   score?: number;
   searchStrategy?: SearchStrategy;
@@ -42,30 +24,25 @@ export type WorkspaceProjection = Awaited<ReturnType<KnowledgeProjection["worksp
 export type RecallDetail = NonNullable<Awaited<ReturnType<KnowledgeProjection["recall"]>>>;
 
 export interface AssetDetail extends AssetLibraryItem {
-  frontmatter: AssetFrontmatter;
-  rawMarkdown: string;
+  bodyMarkdown: string;
   recentRecalls: Omit<ItemProjection, "assetTitle">[];
   recentUsage: UsageProjection[];
-  renderedMarkdown: string;
   usageSummary: AssetUsageSummary;
 }
 
 export interface InboxItem {
   knowledgeNumber: number | null;
-  candidateId?: string;
+  candidateId: string;
+  number: number;
   intent?: "NEW" | "REVISION";
-  reviewBucket?: "PENDING" | "DEFERRED";
-  baselineHash?: string | null;
+  status: "PENDING" | "DEFERRED";
+  baseVersion: number | null;
   baselineMarkdown?: string;
-  currentFormalHash?: string;
-  problem?: string;
-  frozen?: boolean;
+  currentFormalVersion?: number;
   assetId: string;
-  contentHash: string;
-  frontmatter: AssetFrontmatter;
-  modifiedAt: string;
-  rawMarkdown: string;
-  relativePath: string;
+  version: number;
+  updatedAt: string;
+  bodyMarkdown: string;
   scope: AssetScope;
   summary: string;
   title: string;
@@ -73,29 +50,8 @@ export interface InboxItem {
   workspace: string | null;
 }
 
-export type InboxDiagnosticCode =
-  | "ID_CONFLICT"
-  | "DUPLICATE_ASSET_ID"
-  | "INVALID_FRONTMATTER"
-  | "UNKNOWN_WORKSPACE"
-  | "PATH_TYPE_MISMATCH"
-  | "PATH_SCOPE_MISMATCH"
-  | "PATH_WORKSPACE_MISMATCH"
-  | "NON_MARKDOWN_FILE"
-  | "DIRECTORY_ASSET"
-  | "SYMLINK"
-  | string;
-
-export interface InboxDiagnostic {
-  assetId?: string;
-  code: InboxDiagnosticCode;
-  message: string;
-  relativePath: string;
-}
-
 export interface InboxResult {
   managed?: boolean;
-  diagnostics: InboxDiagnostic[];
   items: InboxItem[];
 }
 
@@ -126,43 +82,6 @@ export interface AssetListResult {
   limit: number;
 }
 
-export type WatcherState = "NOT_STARTED" | "STARTING" | "RUNNING" | "DEGRADED" | "STOPPED";
-export type SystemReadiness = "READY" | "DEGRADED" | "REBUILD_REQUIRED";
-
-export interface SystemDiagnostic {
-  code: string;
-  message: string;
-  occurredAt?: string;
-  relativePath?: string;
-  source: "INBOX" | "INDEX" | "SCANNER" | "WATCHER" | "WORKSPACE";
-}
-
-export interface SystemStatus {
-  buildId?: string;
-  diagnostics: SystemDiagnostic[];
-  index: {
-    catalogCount: number | null;
-    ftsCount: number | null;
-    indexState: SystemReadiness;
-    lastSuccessfulScanAt: string | null;
-    rebuildRequired: boolean;
-    watcherState: WatcherState;
-  };
-  mcpEndpoint: {
-    path: "/mcp";
-    ready: boolean;
-  };
-  repository: {
-    assetRepositoryPath: string;
-    formalAssetCount: number | null;
-    inboxAssetCount: number | null;
-  };
-  service: {
-    name: string;
-    readiness: SystemReadiness;
-    uptimeSeconds: number;
-    version: string;
-  };
-}
+export type { SystemReadiness, SystemStatusDto as SystemStatus } from "../../../server/src/http/service.js";
 
 export type { OverviewDto } from "../../../server/src/http/overview.js";

@@ -6,7 +6,7 @@ export class KnowledgeError extends Error {
 }
 export const capabilityIdsSchema = z.array(z.string().regex(/^cap_[A-Za-z0-9_-]{43}$/u)).max(8);
 export const referenceSchema = z.string().regex(/^usg[0-9]+$/u);
-export const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+export const versionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const recallInputSchema = z.object({
   capabilityIds: capabilityIdsSchema,
   queries: z.array(z.string().trim().min(1).max(256).regex(/^[^\u0000-\u001f\u007f]+$/u)).min(1).max(8)
@@ -14,14 +14,14 @@ export const recallInputSchema = z.object({
 }).strict();
 export const readInputSchema = z.union([
   z.object({ capabilityIds: capabilityIdsSchema, recallItemId: referenceSchema }).strict(),
-  z.object({ capabilityIds: capabilityIdsSchema, assetId: assetIdSchema, expectedContentHash: hashSchema.optional() }).strict(),
+  z.object({ capabilityIds: capabilityIdsSchema, assetId: assetIdSchema, expectedVersion: versionSchema.optional() }).strict(),
 ]);
 export const usedInputSchema = z.union([
   z.object({ capabilityIds: capabilityIdsSchema, recallItemId: referenceSchema }).strict(),
   z.object({ capabilityIds: capabilityIdsSchema, readRef: referenceSchema }).strict(),
 ]);
 export interface Source {
-  assetId: string; contentHash: string; assetScope: "GLOBAL" | "WORKSPACE"; assetWorkspace: string | null;
+  assetId: string; version: number; assetScope: "GLOBAL" | "WORKSPACE"; assetWorkspace: string | null;
 }
 export interface RecallItem extends Source {
   recallItemId: string | null; title: string; type: "MEMORY" | "DOCUMENT" | "SKILL";

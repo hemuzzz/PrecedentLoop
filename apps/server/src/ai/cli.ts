@@ -4,7 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { RepositoryOperationError } from "../asset/coordination.js";
+import { RepositoryOperationError } from "../asset/errors.js";
 
 export const providerSchema = z.object({
   id: z.enum(["codex", "claude"]), executable: z.string().refine(isAbsolute),

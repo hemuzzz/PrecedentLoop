@@ -1,58 +1,31 @@
-import { initializeDatabase } from "../src/storage/schema.js";
-import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { writeFile } from "node:fs/promises";
 import test from "node:test";
-import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
-import { InboxApplicationService } from "../src/asset/inbox.js";
+import { knowledgeFixture } from "../test-support/knowledge-fixture.js";
 import { OverviewApplicationService } from "../src/http/overview.js";
 
-test("overview graph projects qualified titles and pending status with exact counts, including empty workspaces", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-overview-graph-"));
+test("overview projects current titles and pending status, includes empty workspaces and hides deleted rows", async () => {
+  const f = await knowledgeFixture();
   try {
-    const ids = new SnowflakeIdGenerator();
-    const repositoryPath = join(root, "repository");
-    const workspaceConfigPath = join(root, "workspaces.json");
-    await mkdir(repositoryPath);
-    await writeFile(workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: [
-      { name: "alpha", paths: [join(root, "alpha")] }, { name: "empty", paths: [join(root, "empty")] },
-    ] }));
-    async function asset(area: string, scope: string, title: string) {
-      const id = ids.next("ast");
-      const path = join(repositoryPath, area, scope === "GLOBAL" ? "global" : "workspaces/alpha", "memories", `${id}.md`);
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, `---\nid: ${id}\ntype: MEMORY\nscope: ${scope}\n${scope === "WORKSPACE" ? "workspace: alpha\n" : ""}title: ${title}\nsummary: 测试标题投影\n---\n不应随图谱返回的正文。\n`);
-      return { id, path };
-    }
-    const formal = await asset("assets", "WORKSPACE", "正式记忆");
-    const pending = await asset("inbox", "WORKSPACE", "待确认记忆");
-    await asset("assets", "GLOBAL", "全局记忆");
-    await writeFile(join(dirname(formal.path), "invalid.md"), "没有合法 Frontmatter");
-    await symlink(formal.path, join(dirname(formal.path), "linked.md"));
-    const options = { repositoryPath, workspaceConfigPath };
-    const inboxService = new InboxApplicationService(options, { existingCatalogAssetIds: () => new Set([formal.id]) });
-    const databasePath = join(root, "data.sqlite"); initializeDatabase(databasePath);
-    const repository = new KnowledgeRepository(databasePath);
-    const service = new OverviewApplicationService({ ...options, inboxService,
-      projection: { repository, totals: () => ({ recallOperations: 5, recallItems: 9, reads: 3, used: 2 }) } });
+    const formal = await f.asset({ title: "正式记忆", workspace: "alpha", body: "不应随图谱返回的正文" });
+    const pending = await f.asset({ title: "待确认记忆", workspace: "alpha", inbox: true, body: "不应随图谱返回的正文" });
+    await f.asset({ title: "全局记忆" });
+    const service = new OverviewApplicationService({ ...f.options, candidateService: f.candidateService, projection: f.projection });
     const result = await service.get();
-    assert.deepEqual(result.scopes.map(s => s.workspace), [null, "alpha", "empty"]);
+    assert.deepEqual(result.scopes.map(s => s.workspace), [null, "alpha", "beta"]);
     const scope = result.scopes.find(s => s.workspace === "alpha")!;
-    assert.equal(scope.assets.MEMORY, 1);
-    assert.equal(scope.inboxCount, 1);
-    assert.deepEqual(scope.items.find(i => i.assetId === formal.id), { assetId: formal.id, title: "正式记忆", type: "MEMORY", pending: false, knowledgeNumber: null });
-    assert.deepEqual(scope.items.find(i => i.assetId === pending.id), { assetId: pending.id, title: "待确认记忆", type: "MEMORY", pending: true, candidateId: null, knowledgeNumber: null });
+    assert.equal(scope.assets.MEMORY, 1); assert.equal(scope.inboxCount, 1);
+    assert.deepEqual(scope.items.find(i => i.assetId === formal.assetId), { assetId: formal.assetId, title: "正式记忆", type: "MEMORY", pending: false, knowledgeNumber: 1 });
+    const candidate = (await f.candidateService.list()).items[0]!;
+    assert.deepEqual(scope.items.find(i => i.assetId === pending.assetId), { assetId: pending.assetId, title: "待确认记忆", type: "MEMORY", pending: true, candidateId: candidate.candidateId, number: candidate.number, knowledgeNumber: null });
     assert.equal(result.scopes.at(-1)!.items.length, 0);
-    assert.ok(result.diagnosticCount >= 2);
+    assert.equal(result.diagnosticCount, 0);
     assert.ok(!JSON.stringify(result).includes("不应随图谱返回的正文"));
-    await rm(formal.path);
+    f.remove(formal.assetId);
     const refreshed = await service.get();
     assert.equal(refreshed.scopes.find(s => s.workspace === "alpha")!.assets.MEMORY, 0);
-    assert.ok(!refreshed.scopes.flatMap(s => s.items).some(i => i.assetId === formal.id));
-    await writeFile(workspaceConfigPath, "invalid");
-    await assert.rejects(service.get(), { code: "ASSET_SEARCH_UNAVAILABLE" });
-    repository.close();
-  } finally { await rm(root, { recursive: true, force: true }); }
+    assert.ok(!refreshed.scopes.flatMap(s => s.items).some(i => i.assetId === formal.assetId));
+    await writeFile(f.options.workspaceConfigPath, "invalid");
+    await assert.rejects(service.get(), { code: "WORKSPACE_CONFIG_UNAVAILABLE" });
+  } finally { await f.close(); }
 });

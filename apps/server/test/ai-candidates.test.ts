@@ -23,6 +23,34 @@ async function finished(service: AiService, id: string): Promise<AiOperationStat
   throw new Error("operation did not finish");
 }
 
+test("AI import references and rewrite candidate/baseline display their heading once", async () => {
+  const f = await candidateFixture();
+  const original = content(`# 候选知识\n\n${conclusion}`);
+  const revised = content(`# 候选知识\n\n修订：${conclusion}`);
+  const expected = `# 候选知识\n\n可核实的摘要\n\n${conclusion}`;
+  const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => {
+    const payload = JSON.parse(await readFile(join(input.directory, "input.json"), "utf8")) as {
+      operation: string; existingAssets: Array<{ content: string }>; candidate: string; baseline: string;
+    };
+    if (payload.operation === "import") {
+      assert.deepEqual(payload.existingAssets.map(asset => asset.content), [expected]);
+      return output(0);
+    }
+    assert.equal(payload.baseline, expected);
+    assert.equal(payload.candidate, `# 候选知识\n\n可核实的摘要\n\n修订：${conclusion}`);
+    return { schemaVersion: 1, content: { title: revised.title, summary: revised.summary, bodyMarkdown: revised.bodyMarkdown }, explanation: "保持内容" };
+  } });
+  try {
+    const item = (await f.prepare("display-formal", [original])).candidates[0]!;
+    await f.service.accept(selection(item, "display-accept"));
+    await ai.import(batch("display-import"));
+    assert.equal((await finished(ai, "display-import")).state, "SUCCEEDED");
+    const revision = (await f.prepare("display-revision", [{ ...revised, existingAssetId: item.assetId, baseVersion: 0 }])).candidates[0]!;
+    await ai.rewrite({ ...selection(revision, "display-rewrite"), provider: "codex", instructions: "检查正文" });
+    assert.equal((await finished(ai, "display-rewrite")).state, "SUCCEEDED");
+  } finally { await ai.close(); await f.cleanup(); }
+});
+
 test("import JSON Schema has strict objects with every property required", () => {
   let objects = 0;
   const inspect = (value: unknown): void => {
@@ -76,11 +104,11 @@ test("all import types produce the same candidate body as MCP apart from retenti
     for (const input of inputs) {
       const result = await prepareStructuredCandidate({ ...input, reviewedCandidateIds: (await f.service.pendingCandidates()).map(item => item.record.candidateId) }, f.service, capabilities);
       assert.ok(!("status" in result));
-      const mcp = (await f.service.pendingCandidates()).find(item => item.record.candidateId === result.candidateId)!.asset!;
-      const actual = imported.find(item => item.asset!.frontmatter.type === input.type)!.asset!.content;
+      const mcp = (await f.service.pendingCandidates()).find(item => item.record.candidateId === result.candidateId)!.record;
+      const actual = imported.find(item => item.record.type === input.type)!.record.bodyMarkdown;
       assert.match(actual, /留存：\d{4}-.*，本次导入提交/u);
       const canonical = (body: string) => body.replace(/留存：[^\n]+，本次(?:会话|导入)提交/gu, "留存：服务端时间，提交");
-      assert.equal(canonical(actual), canonical(mcp.content));
+      assert.equal(canonical(actual), canonical(mcp.bodyMarkdown));
     }
   } finally { await ai.close(); repository.close(); await f.cleanup(); }
 });
@@ -108,7 +136,7 @@ test("import filters unsafe candidates individually and commits a durable zero-i
 
 test("related references are validated before filtering, while scope violations only remove that candidate", async () => {
   const f = await candidateFixture(); let forged = true;
-  const formal = (await f.service.prepare("formal", [{ ...content(conclusion), target: { scope: "WORKSPACE", workspace: "alpha" } }])).candidates[0]!;
+  const formal = (await f.prepare("formal", [{ ...content(conclusion), target: { scope: "WORKSPACE", workspace: "alpha" } }])).candidates[0]!;
   await f.service.accept(selection(formal, "accept"));
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => ({ ...output(), candidates: [
     { ...output().candidates[0]!, title: "相关知识", related: [{ existingAssetRef: forged ? "invented" : "0", relation: "相关参考" }], ...(forged ? { conclusion: "https://example.com" } : {}) },
@@ -127,56 +155,94 @@ test("related references are validated before filtering, while scope violations 
         const result = status.result as { candidates: unknown[]; warnings: string[] };
         assert.equal(result.candidates.length, 2);
         assert.deepEqual(result.warnings, ["候选《相关知识》未写入：RELATED_ASSET_INVALID（related.0.assetId）"]);
-        const related = (await f.service.pendingCandidates()).find(item => item.asset?.frontmatter.title === "允许相关知识")!.asset!;
-        assert.ok(related.content.includes(`候选知识（${formal.assetId}）：相关参考`));
+        const related = (await f.service.pendingCandidates()).find(item => item.record.title === "允许相关知识")!.record;
+        assert.ok(related.bodyMarkdown.includes(`候选知识（${formal.assetId}）：相关参考`));
       }
       forged = false;
     }
   } finally { await ai.close(); await f.cleanup(); }
 });
 
-test("revision conflicts include abnormal pending records and do not roll back independent candidates", async () => {
+test("revision conflicts include pending and deferred records and do not roll back independent candidates", async () => {
   const f = await candidateFixture();
-  const formal = (await f.service.prepare("formal", [content(conclusion)])).candidates[0]!;
+  const formal = (await f.prepare("formal", [content(conclusion)])).candidates[0]!;
   await f.service.accept(selection(formal, "accept"));
-  await f.service.prepare("revision", [{ ...content(conclusion), existingAssetId: formal.assetId, baselineHash: formal.contentHash }]);
+  await f.prepare("revision", [{ ...content(conclusion), existingAssetId: formal.assetId, baseVersion: formal.version }]);
   const pending = (await f.service.pendingCandidates())[0]!;
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => ({ ...output(), candidates: [{ ...output().candidates[0]!, title: "修订", existingAssetRef: "0" }, output().candidates[0]!] }) });
   try {
     for (const requestId of ["healthy-conflict", "abnormal-conflict"]) {
-      if (requestId === "abnormal-conflict") await unlink(join(f.options.repositoryPath, pending.record.relativePath));
+      if (requestId === "abnormal-conflict") await f.service.defer({ ...selection(pending.record, "defer-revision"), deferred: true });
       await ai.import(batch(requestId));
       const status = await finished(ai, requestId);
       assert.equal(status.state, "SUCCEEDED");
       const result = status.result as { candidates: unknown[]; warnings: string[] };
       assert.equal(result.candidates.length, 1);
-      assert.deepEqual(result.warnings, ["候选《修订》未写入：CANDIDATE_CONFLICT"]);
+      assert.equal(result.warnings.length, 1);
+      assert.ok(result.warnings[0]!.includes(`已有未处理的候选 #${pending.record.number}（${requestId === "abnormal-conflict" ? "暂存" : "待审"}），本次修订没有写入`));
+      assert.match(result.warnings[0]!, /接受或拒绝/);
     }
   } finally { await ai.close(); await f.cleanup(); }
 });
 
-test("pending comparisons filter SELECTED targets, omit problems and private identifiers, and resolve source pendingRef", async () => {
+test("AI import skips a revision whose formal version changed during inference and commits independent candidates", async () => {
+  const f = await candidateFixture();
+  const formal = (await f.prepare("stale-formal", [content(conclusion)])).candidates[0]!;
+  await f.service.accept(selection(formal, "stale-accept"));
+  const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => {
+    const revision = (await f.prepare("concurrent-revision", [{ ...content("另一条已审核修订"), existingAssetId: formal.assetId, baseVersion: 0 }])).candidates[0]!;
+    await f.service.accept({ ...selection(revision, "concurrent-accept"), baseVersion: 0 });
+    return { ...output(), candidates: [{ ...output().candidates[0]!, title: "过时修订", existingAssetRef: "0" }, output().candidates[0]!] };
+  } });
+  try {
+    await ai.import(batch("stale-import"));
+    const status = await finished(ai, "stale-import"); assert.equal(status.state, "SUCCEEDED");
+    const result = status.result as { count: number; warnings: string[] };
+    assert.equal(result.count, 1); assert.equal(result.warnings.length, 1); assert.match(result.warnings[0]!, /版本或范围已变化/);
+    const current = (await f.service.formalAssets())[0]!;
+    assert.equal(current.version, 1); assert.equal(current.bodyMarkdown, "另一条已审核修订");
+    assert.equal((await f.service.list()).items.length, 1); assert.ok(await f.service.receipt("stale-import"));
+  } finally { await ai.close(); await f.cleanup(); }
+});
+
+test("AI import rechecks related knowledge inside the commit after concurrent deletion", async () => {
+  const f = await candidateFixture();
+  const formal = (await f.prepare("related-formal", [content(conclusion)])).candidates[0]!;
+  await f.service.accept(selection(formal, "related-accept"));
+  const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => {
+    await f.service.delete({ requestId: "related-delete", assetId: formal.assetId });
+    return { ...output(), candidates: [{ ...output().candidates[0]!, title: "引用已删除知识", related: [{ existingAssetRef: "0", relation: "提供适用前提" }] }, output().candidates[0]!] };
+  } });
+  try {
+    await ai.import(batch("related-import"));
+    const status = await finished(ai, "related-import"); assert.equal(status.state, "SUCCEEDED");
+    const result = status.result as { count: number; warnings: string[] };
+    assert.equal(result.count, 1); assert.deepEqual(result.warnings, ["候选《引用已删除知识》未写入：RELATED_ASSET_INVALID"]);
+    assert.equal((await f.service.list()).items.length, 1);
+  } finally { await ai.close(); await f.cleanup(); }
+});
+
+test("pending comparisons filter SELECTED targets, omit processed rows and private identifiers, and resolve source pendingRef", async () => {
   const f = await candidateFixture(); let automatic = false, forged = false;
   let runnerError: unknown;
-  await f.service.prepare("global", [content(conclusion)]);
-  await f.service.prepare("workspace", [{ ...content(conclusion), title: "工作区", target: { scope: "WORKSPACE", workspace: "alpha" } }]);
-  await f.service.prepare("problem", [content(conclusion)]);
+  await f.prepare("global", [content(conclusion)]);
+  await f.prepare("workspace", [{ ...content(conclusion), title: "工作区", target: { scope: "WORKSPACE", workspace: "alpha" } }]);
+  await f.prepare("problem", [content(conclusion)]);
   const before = await f.service.pendingCandidates();
   const problem = before[0]!;
-  await unlink(join(f.options.repositoryPath, problem.record.relativePath));
-  const global = before.find(item => item.record.candidateId !== problem.record.candidateId && item.asset!.frontmatter.scope === "GLOBAL")!;
+  await f.service.reject(selection(problem.record, "reject-problem"));
+  const global = before.find(item => item.record.candidateId !== problem.record.candidateId && item.record.scope === "GLOBAL")!;
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => {
     try {
       const payload = JSON.parse(await readFile(join(input.directory, "input.json"), "utf8")) as { pendingCandidates: Array<{ pendingRef: string; scope: string; title: string; bodyMarkdown: string }>; pendingComparisonLimited: boolean };
       assert.equal(payload.pendingCandidates.length, automatic ? 2 : 1);
       assert.equal(payload.pendingComparisonLimited, false);
-      assert.doesNotMatch(JSON.stringify(payload.pendingCandidates), /candidateId|candidateHash|contentHash|assetId/u);
+      assert.doesNotMatch(JSON.stringify(payload.pendingCandidates), /candidateId|candidateVersion|version|assetId/u);
       for (const item of before) {
         assert.ok(!JSON.stringify(payload.pendingCandidates).includes(item.record.assetId));
-        assert.ok(!JSON.stringify(payload.pendingCandidates).includes(item.record.contentHash));
       }
       const item = payload.pendingCandidates.find(item => item.scope === "GLOBAL")!;
-      assert.equal(item.bodyMarkdown, global.asset!.content);
+      assert.equal(item.bodyMarkdown, global.record.bodyMarkdown);
       assert.equal((await f.service.list()).items.every(item => !("frozen" in item) || !item.frozen), true);
       return { ...output(0), sourceResults: output().sourceResults.map(source => ({ ...source, explanation: "建议补充到该候选", pendingRef: forged ? "invented" : item.pendingRef })) };
     } catch (error) { runnerError = error; throw error; }
@@ -192,16 +258,16 @@ test("pending comparisons filter SELECTED targets, omit problems and private ide
         assert.equal(status.state, "SUCCEEDED");
         const result = status.result as { sourceResults: Array<{ name: string; explanation: string }> };
         assert.equal(result.sourceResults[0]!.name, "one.md");
-        assert.equal(result.sourceResults[0]!.explanation, `建议补充到该候选（待审候选 #${global.record.candidateId}）`);
+        assert.equal(result.sourceResults[0]!.explanation, `建议补充到该候选（待审候选 #${global.record.number}）`);
       }
     }
-    assert.deepEqual(await f.service.pendingCandidates(), before.map(item => item.record.candidateId === problem.record.candidateId ? { record: item.record, problem: true } : item));
+    assert.deepEqual(await f.service.pendingCandidates(), before.filter(item => item.record.candidateId !== problem.record.candidateId));
   } finally { await ai.close(); await f.cleanup(); }
 });
 
 test("pending comparison budget emits omission markers and a durable limited warning", async () => {
   const f = await candidateFixture();
-  await f.service.prepare("large-pending", [content("文".repeat(30_001))]);
+  await f.prepare("large-pending", [content("文".repeat(30_001))]);
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => {
     const payload = JSON.parse(await readFile(join(input.directory, "input.json"), "utf8"));
     assert.equal(payload.pendingComparisonLimited, true);
@@ -220,7 +286,7 @@ test("pending comparison budget emits omission markers and a durable limited war
 
 test("AI rewrite rejects credentials and link-only bodies without changing candidate bytes or writing a receipt", async () => {
   const f = await candidateFixture(); let bodyMarkdown = 'password="DO_NOT_ECHO"';
-  const candidate = (await f.service.prepare("original", [content(conclusion)])).candidates[0]!;
+  const candidate = (await f.prepare("original", [content(conclusion)])).candidates[0]!;
   const before = (await f.service.list()).items[0]!;
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => ({ schemaVersion: 1, content: { title: "改稿", summary: "摘要", bodyMarkdown }, explanation: "修改" }) });
   try {
@@ -230,8 +296,8 @@ test("AI rewrite rejects credentials and link-only bodies without changing candi
       assert.equal(status.state, "FAILED"); assert.equal(status.error?.code, code);
       assert.doesNotMatch(JSON.stringify(status), /DO_NOT_ECHO/u);
       assert.equal(await f.service.receipt(code), undefined);
-      assert.equal(await readFile(join(f.options.repositoryPath, before.relativePath), "utf8"), before.rawMarkdown);
-      assert.equal((await f.service.list()).items[0]!.frozen, false);
+      assert.equal((await f.service.list()).items[0]!.bodyMarkdown, before.bodyMarkdown);
+      assert.equal("frozen" in (await f.service.list()).items[0]!, false);
       bodyMarkdown = "参见 https://example.com/guide.md";
     }
   } finally { await ai.close(); await f.cleanup(); }
@@ -385,50 +451,48 @@ test("invalid coverage, unauthorized target, forged reference, extra field and t
   } finally { await ai.close(); await f.cleanup(); }
 });
 
-test("rewrite freezes before runner reads, blocks concurrent mutation, preserves identity and resets deferred only on change", async () => {
+test("rewrite runs without a database lock, preserves identity and returns changed content to pending", async () => {
   const f = await candidateFixture(); let release!: () => void, entered!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => { assert.match(input.prompt, /原文/u); entered(); await wait; return { schemaVersion: 1, content: { title: "改稿", summary: "修正摘要", bodyMarkdown: conclusion }, explanation: "补充条件" }; } });
   try {
-    const candidate = (await f.service.prepare("prepare", [content()])).candidates[0]!;
+    const candidate = (await f.prepare("prepare", [content()])).candidates[0]!;
     await f.service.defer({ ...selection(candidate, "defer"), deferred: true });
     await ai.rewrite({ ...selection(candidate, "rewrite"), provider: "codex", instructions: "修正" }); await ready;
-    assert.equal((await f.service.list()).items[0]?.frozen, true);
-    for (const action of ["accept", "reject"] as const) await assert.rejects(f.service[action](selection(candidate, action)), { code: "ASSET_FROZEN" });
-    await assert.rejects(f.service.defer({ ...selection(candidate, "frozen-defer"), deferred: false }), { code: "ASSET_FROZEN" });
+    assert.equal("frozen" in (await f.service.list()).items[0]!, false);
+    await f.service.defer({ ...selection(candidate, "during-ai-defer"), deferred: false });
     await assert.rejects(ai.import(batch("busy")), { code: "AI_BUSY" });
     release(); assert.equal((await finished(ai, "rewrite")).state, "SUCCEEDED");
     await ai.close();
     const updated = (await f.service.list()).items[0]!;
     assert.equal(updated.candidateId, candidate.candidateId); assert.equal(updated.assetId, candidate.assetId);
-    assert.equal(updated.reviewBucket, "PENDING"); assert.equal(updated.frozen, false);
-    await assert.rejects(f.service.accept(selection(candidate, "stale-accept")), { code: "CONTENT_HASH_MISMATCH" });
+    assert.equal(updated.status, "PENDING"); assert.equal("frozen" in updated, false);
+    await assert.rejects(f.service.accept(selection(candidate, "stale-accept")), { code: "VERSION_CONFLICT" });
   } finally { release(); await ai.close(); await f.cleanup(); }
 });
 
 test("external edit during rewrite is preserved and no operation receipt is fabricated", async () => {
   const f = await candidateFixture();
-  const candidate = (await f.service.prepare("prepare", [content()])).candidates[0]!;
+  const candidate = (await f.prepare("prepare", [content()])).candidates[0]!;
   const item = (await f.service.list()).items[0]!;
-  const path = join(f.options.repositoryPath, item.relativePath);
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => {
-    await writeFile(path, `${item.rawMarkdown}\n外部编辑`);
+    await f.service.rewrite(selection(candidate, "concurrent-edit"), { title: item.title, summary: item.summary, bodyMarkdown: `${item.bodyMarkdown}\n外部编辑` });
     return { schemaVersion: 1, content: { title: "改稿", summary: "摘要", bodyMarkdown: conclusion }, explanation: "修改" };
   } });
   try {
     await ai.rewrite({ ...selection(candidate, "rewrite"), provider: "codex", instructions: "修改" });
-    assert.equal((await finished(ai, "rewrite")).error?.code, "CONTENT_HASH_MISMATCH");
+    assert.equal((await finished(ai, "rewrite")).error?.code, "VERSION_CONFLICT");
     assert.equal(await f.service.operation("rewrite"), undefined);
-    assert.match(await readFile(path, "utf8"), /外部编辑/u);
+    assert.match((await f.service.list()).items[0]!.bodyMarkdown, /外部编辑/u);
   } finally { await ai.close(); await f.cleanup(); }
 });
 
-test("import compares only allowed frozen formal versions and revisions keep their exact identity and baseline", async () => {
+test("import compares only allowed formal versions and revisions keep their exact identity and baseline", async () => {
   const f = await candidateFixture(); let release!: () => void, entered!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
-  const a = (await f.service.prepare("formal-a", [content("GLOBAL_BASELINE")])).candidates[0]!;
+  const a = (await f.prepare("formal-a", [content("GLOBAL_BASELINE")])).candidates[0]!;
   await f.service.accept(selection(a, "accept-a"));
-  const privateAsset = (await f.service.prepare("formal-private", [{ ...content("PRIVATE_SCOPE_MUST_NOT_LEAK"), target: { scope: "WORKSPACE", workspace: "alpha" } }])).candidates[0]!;
+  const privateAsset = (await f.prepare("formal-private", [{ ...content("PRIVATE_SCOPE_MUST_NOT_LEAK"), target: { scope: "WORKSPACE", workspace: "alpha" } }])).candidates[0]!;
   await f.service.accept(selection(privateAsset, "accept-private"));
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => {
     assert.match(input.prompt, /GLOBAL_BASELINE/u); assert.doesNotMatch(input.prompt, /PRIVATE_SCOPE_MUST_NOT_LEAK/u);
@@ -437,32 +501,25 @@ test("import compares only allowed frozen formal versions and revisions keep the
   } });
   try {
     await ai.import(batch("revision")); await ready;
-    await assert.rejects(f.service.prepare("competing", [{ ...content("competing"), existingAssetId: a.assetId, baselineHash: a.contentHash }]), { code: "ASSET_FROZEN" });
-    const original = (await import("../src/asset/scanner.js")).scanAssetRepository;
-    const formal = (await original(f.options)).assets.find(asset => asset.frontmatter.id === a.assetId)!;
-    const path = `inbox/${formal.relativePath.slice(7)}`;
-    await mkdir(dirname(join(f.options.repositoryPath, path)), { recursive: true }); await writeFile(join(f.options.repositoryPath, path), formal.rawContent);
-    await assert.rejects(f.service.confirmPath({ relativePath: path, expectedContentHash: a.contentHash, updateAssetId: a.assetId, expectedBaselineHash: a.contentHash }), { code: "ASSET_FROZEN" });
-    await unlink(join(f.options.repositoryPath, path));
-    const unrelated = (await f.service.prepare("unrelated", [{ ...content("another scope"), existingAssetId: privateAsset.assetId, baselineHash: privateAsset.contentHash, target: { scope: "WORKSPACE", workspace: "alpha" } }])).candidates[0]!;
-    await f.service.accept({ ...selection(unrelated, "unrelated-accept"), baselineHash: privateAsset.contentHash });
+    const unrelated = (await f.prepare("unrelated", [{ ...content("another scope"), existingAssetId: privateAsset.assetId, baseVersion: privateAsset.version, target: { scope: "WORKSPACE", workspace: "alpha" } }])).candidates[0]!;
+    await f.service.accept({ ...selection(unrelated, "unrelated-accept"), baseVersion: privateAsset.version });
     release(); assert.equal((await finished(ai, "revision")).state, "SUCCEEDED"); await ai.close();
     const revision = (await f.service.list()).items[0]!;
     assert.equal(revision.assetId, a.assetId); assert.notEqual(revision.candidateId, a.candidateId);
-    assert.equal(revision.intent, "REVISION"); assert.equal(revision.baselineHash, a.contentHash);
+    assert.equal(revision.intent, "REVISION"); assert.equal(revision.baseVersion, a.version);
   } finally { release(); await ai.close(); await f.cleanup(); }
 });
 
-test("shutdown aborts generation, drops late output, releases freezes and refuses new operations", async () => {
+test("shutdown aborts generation, drops late output, preserves candidates and refuses new operations", async () => {
   const f = await candidateFixture(); let ready!: () => void;
   const entered = new Promise<void>(resolve => { ready = resolve; });
-  const candidate = (await f.service.prepare("prepare", [content()])).candidates[0]!;
+  const candidate = (await f.prepare("prepare", [content()])).candidates[0]!;
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => { ready(); await new Promise<void>(resolve => input.signal.addEventListener("abort", () => resolve(), { once: true })); return { schemaVersion: 1, content: { title: "迟到", summary: "摘要", bodyMarkdown: "迟到结果" }, explanation: "修改" }; } });
   try {
     await ai.rewrite({ ...selection(candidate, "stopped"), provider: "codex", instructions: "修改" }); await entered; await ai.close();
     assert.equal((await ai.status("stopped"))?.state, "FAILED");
     assert.equal(await f.service.operation("stopped"), undefined);
-    assert.equal((await f.service.list()).items[0]?.contentHash, candidate.contentHash);
+    assert.equal((await f.service.list()).items[0]?.version, candidate.version);
     await f.service.reject(selection(candidate, "after-stop"));
     await assert.rejects(ai.import(batch("new")), { code: "AI_SHUTTING_DOWN" });
   } finally { await ai.close(); await f.cleanup(); }
@@ -528,7 +585,7 @@ test("Codex adapter stops before generation for unsupported MCP keys or ineffect
   } finally { await f.cleanup(); }
 });
 
-test("CLI configuration failure exposes only a safe stage and reason, preserves candidate and releases its freeze", async () => {
+test("CLI configuration failure exposes only a safe stage and reason, preserves candidate and leaves it editable", async () => {
   const f = await candidateFixture();
   const executable = join(f.root, "mock-codex");
   await writeFile(executable, `#!${process.execPath}\nconst a=process.argv.slice(2);
@@ -540,7 +597,7 @@ test("CLI configuration failure exposes only a safe stage and reason, preserves 
   await writeFile(f.configPath, JSON.stringify({ providers: [{ id: "codex", executable, timeoutMs: 2000 }] }));
   const ai = new AiService(f.service, { configPath: f.configPath });
   try {
-    const candidate = (await f.service.prepare("prepare", [content()])).candidates[0]!;
+    const candidate = (await f.prepare("prepare", [content()])).candidates[0]!;
     await ai.rewrite({ ...selection(candidate, "cli-failure"), provider: "codex", instructions: "修改" });
     const status = await finished(ai, "cli-failure");
     assert.equal(status.state, "FAILED");
@@ -550,8 +607,8 @@ test("CLI configuration failure exposes only a safe stage and reason, preserves 
     assert.doesNotMatch(JSON.stringify(status), /SECRET_MUST_NOT_LEAK/u);
     assert.equal(await f.service.receipt("cli-failure"), undefined);
     const current = (await f.service.list()).items[0]!;
-    assert.equal(current.contentHash, candidate.contentHash);
-    assert.equal(current.frozen, false);
+    assert.equal(current.version, candidate.version);
+    assert.equal("frozen" in current, false);
   } finally { await ai.close(); await f.cleanup(); }
 });
 

@@ -3,9 +3,10 @@ import { link, lstat, mkdir, open, readFile, rename, unlink } from "node:fs/prom
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { RepositoryOperationError, withRepositoryAccess } from "../asset/coordination.js";
+import { RepositoryOperationError } from "../asset/errors.js";
+import { writeWorkspaceConfiguration } from "../storage/workspace-write.js";
 import { workspaceConfigSchema, type WorkspaceConfig } from "../asset/schema.js";
-import { loadWorkspaceConfig } from "../asset/scanner.js";
+import { loadWorkspaceConfig } from "./config.js";
 import { CodexProjectError, readCodexProjects } from "./codex-project-parser.js";
 
 export function codexProjectStatePath(): string {
@@ -15,8 +16,8 @@ export function codexProjectStatePath(): string {
 /** First-use Hub initialization (no selection) keeps the empty-only, Codex-only behavior.
  * Setup and Settings append selected paths; the selection is re-validated against a fresh
  * project list, so volatile source files (e.g. ~/.claude.json) are not compared byte for byte. */
-export async function initializeCodexWorkspaces(options: { repositoryPath: string; workspaceConfigPath: string }, statePath = codexProjectStatePath(), selection?: { paths: string[]; expectedConfig: string | null; append?: boolean | undefined; claudeConfigPath?: string | undefined; home?: string | undefined }): Promise<WorkspaceConfig> {
-  return withRepositoryAccess(options.repositoryPath, async () => {
+export async function initializeCodexWorkspaces(options: { databasePath: string; workspaceConfigPath: string }, statePath = codexProjectStatePath(), selection?: { paths: string[]; expectedConfig: string | null; append?: boolean | undefined; claudeConfigPath?: string | undefined; home?: string | undefined }): Promise<WorkspaceConfig> {
+  return writeWorkspaceConfiguration(options.databasePath, async () => {
     let before: Buffer | null = null;
     let existing: WorkspaceConfig = { schemaVersion: 1, workspaces: [] };
     try {
@@ -68,4 +69,4 @@ export async function initializeCodexWorkspaces(options: { repositoryPath: strin
     return config;
   });
 }
-function isMissing(error: unknown): boolean { return error instanceof Error && "code" in error && error.code === "ENOENT"; }
+function isMissing(error: unknown): boolean { return error instanceof Error && (("code" in error && error.code === "ENOENT") || isMissing(error.cause)); }

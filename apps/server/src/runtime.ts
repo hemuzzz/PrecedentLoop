@@ -5,13 +5,11 @@ import { fileURLToPath } from "node:url";
 import { getRequestListener } from "@hono/node-server";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 
-import { AssetContentVersionRepository } from "./asset/content-version.js";
 import { CandidateService } from "./asset/candidate-service.js";
 import { AiService } from "./ai/service.js";
 import { AssetDiffService } from "./asset/content-diff.js";
 import { createApp } from "./app.js";
 import {
-  AssetIndexManager,
   AssetSearchService,
 } from "./asset/index.js";
 import {
@@ -21,7 +19,6 @@ import {
 import { KnowledgeRepository } from "./knowledge/repository.js";
 import { KnowledgeService } from "./knowledge/service.js";
 import { KnowledgeProjection } from "./knowledge/projection.js";
-import { KnowledgeError } from "./knowledge/model.js";
 import { WorkspaceCapabilityService } from "./workspace/capability.js";
 import { JsonFileLogger, logPathFromEnvironment } from "./logging.js";
 import {
@@ -32,14 +29,12 @@ import {
 import { createMcpHttpRequestHandler } from "./mcp/index.js";
 import { integrationActivityDirectory } from "./integration-activity.js";
 
-export const SERVER_ASSET_REPOSITORY_PATH_ENV = "PRECEDENT_LOOP_ASSET_REPOSITORY_PATH";
 export const SERVER_PORT_ENV = "PORT";
 const HOST = "127.0.0.1";
 const HUB_DIST_PATH = fileURLToPath(new URL("../../hub/dist/", import.meta.url));
 
 export interface ServerRuntimeConfiguration {
   buildId?: string;
-  assetRepositoryPath: string;
   databasePath: string;
   logPath: string;
   port: number;
@@ -64,19 +59,16 @@ export class ServerConfigurationError extends Error {
 export function serverConfigurationFromEnvironment(
   environment: NodeJS.ProcessEnv,
 ): ServerRuntimeConfiguration {
-  const assetRepositoryPath = environment[SERVER_ASSET_REPOSITORY_PATH_ENV];
   const databasePath = environment[HOOK_DATABASE_PATH_ENV];
   const workspaceConfigPath = environment[HOOK_WORKSPACE_CONFIG_PATH_ENV];
   if (
-    assetRepositoryPath === undefined ||
     databasePath === undefined ||
     workspaceConfigPath === undefined
   ) {
     throw new ServerConfigurationError(
-      `${SERVER_ASSET_REPOSITORY_PATH_ENV}, ${HOOK_DATABASE_PATH_ENV}, and ${HOOK_WORKSPACE_CONFIG_PATH_ENV} must be configured`,
+      `${HOOK_DATABASE_PATH_ENV}, and ${HOOK_WORKSPACE_CONFIG_PATH_ENV} must be configured`,
     );
   }
-  assertAbsolutePath(assetRepositoryPath, "Asset Repository path");
   assertAbsolutePath(databasePath, "database path");
   assertAbsolutePath(workspaceConfigPath, "Workspace configuration path");
 
@@ -92,7 +84,6 @@ export function serverConfigurationFromEnvironment(
     throw new ServerConfigurationError(error instanceof Error ? error.message : "Log path is invalid");
   }
   return {
-    assetRepositoryPath,
     databasePath,
     logPath,
     port,
@@ -104,14 +95,8 @@ export async function startPrecedentLoopServer(
   configuration: ServerRuntimeConfiguration,
   options: { onCandidateWritten?: () => void } = {},
 ): Promise<RunningPrecedentLoopServer> {
-  const indexManager = await AssetIndexManager.create({
-    databasePath: configuration.databasePath,
-    repositoryPath: configuration.assetRepositoryPath,
-    workspaceConfigPath: configuration.workspaceConfigPath,
-  });
-  let contentVersions: AssetContentVersionRepository | undefined;
   let knowledgeRepository: KnowledgeRepository | undefined;
-  const candidateService = new CandidateService({ repositoryPath: configuration.assetRepositoryPath, databasePath: configuration.databasePath, workspaceConfigPath: configuration.workspaceConfigPath });
+  const candidateService = new CandidateService({ databasePath: configuration.databasePath, workspaceConfigPath: configuration.workspaceConfigPath });
   const aiService = new AiService(candidateService, { ...(process.env.PRECEDENT_LOOP_APP_CONFIG_PATH ? { appConfigPath: process.env.PRECEDENT_LOOP_APP_CONFIG_PATH } : {}) });
   let assetSearchService: AssetSearchService | undefined;
   let server: Server | undefined;
@@ -120,22 +105,16 @@ export async function startPrecedentLoopServer(
 
   try {
     await candidateService.initialize();
-    await indexManager.start();
-    contentVersions = new AssetContentVersionRepository(configuration.databasePath);
     knowledgeRepository = new KnowledgeRepository(configuration.databasePath);
     const capabilities = new WorkspaceCapabilityService(knowledgeRepository, configuration.workspaceConfigPath);
     const projection = new KnowledgeProjection(knowledgeRepository, capabilities, {
-      repositoryPath: configuration.assetRepositoryPath, workspaceConfigPath: configuration.workspaceConfigPath,
+      workspaceConfigPath: configuration.workspaceConfigPath,
     });
     assetSearchService = new AssetSearchService({
       databasePath: configuration.databasePath,
-      repositoryPath: configuration.assetRepositoryPath,
       workspaceConfigPath: configuration.workspaceConfigPath,
-      refreshIndex: async () => await indexManager.synchronize(),
     });
-    const knowledgeService = new KnowledgeService(knowledgeRepository, capabilities, assetSearchService, () => {
-      if (indexManager.status().indexState !== "READY") throw new KnowledgeError("ASSET_INDEX_UNAVAILABLE");
-    }, new JsonFileLogger(configuration.logPath));
+    const knowledgeService = new KnowledgeService(knowledgeRepository, capabilities, assetSearchService, new JsonFileLogger(configuration.logPath));
     const mcpRequest = createMcpHttpRequestHandler({ knowledgeService, candidateService, capabilities, onInternalError: logInternalError,
       ...options,
       integrationActivityPath: integrationActivityDirectory(configuration.databasePath) });
@@ -144,14 +123,12 @@ export async function startPrecedentLoopServer(
       assetSearchService,
       projection,
       knowledgeRepository,
-      new AssetDiffService(assetSearchService, contentVersions),
+      new AssetDiffService(assetSearchService),
     );
     const systemStatusService = new SystemStatusApplicationService({
       ...(configuration.buildId === undefined ? {} : { buildId: configuration.buildId }),
-      repositoryPath: configuration.assetRepositoryPath,
       workspaceConfigPath: configuration.workspaceConfigPath,
-      indexStatus: () => indexManager.status(),
-      inboxService,
+      candidateService,
       mcpEndpointReady: () => server?.listening === true,
     });
     const httpApp = createApp(
@@ -161,8 +138,6 @@ export async function startPrecedentLoopServer(
         inboxService,
         candidateService,
         aiService,
-        refreshIndex: async () => { await indexManager.synchronize(); },
-        indexStatus: () => indexManager.status(),
         projection,
         onInternalError: logInternalError,
         systemStatusService,
@@ -202,10 +177,8 @@ export async function startPrecedentLoopServer(
         await aiService.close();
         await closeServer(runningServer);
         await Promise.all(requests);
-        contentVersions?.close();
         assetSearchService?.close();
         knowledgeRepository?.close();
-        await indexManager.close();
         closed = true;
       },
     };
@@ -216,10 +189,8 @@ export async function startPrecedentLoopServer(
       await closeServer(server);
     }
     await Promise.all(requests);
-    contentVersions?.close();
     assetSearchService?.close();
     knowledgeRepository?.close();
-    await indexManager.close();
     throw error;
   }
 }

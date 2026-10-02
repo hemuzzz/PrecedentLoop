@@ -1,3 +1,4 @@
+import { seedAssets } from "./seed-built-assets.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -11,7 +12,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const serverRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = await mkdtemp(join(tmpdir(), "precedent-loop-mcp-build-"));
-const repositoryPath = join(fixtureRoot, "asset-repository");
 const workspaceConfigPath = join(fixtureRoot, "config", "workspaces.json");
 const databasePath = join(fixtureRoot, "data", "precedent-loop.sqlite");
 const workspacePath = join(fixtureRoot, "workspace-alpha");
@@ -20,7 +20,6 @@ const globalAssetId = "ast2034512345678901249";
 const port = await allocatePort();
 const environment = {
   ...process.env,
-  PRECEDENT_LOOP_ASSET_REPOSITORY_PATH: repositoryPath,
   PRECEDENT_LOOP_DATABASE_PATH: databasePath,
   PRECEDENT_LOOP_LOG_PATH: join(fixtureRoot, "logs", "precedent-loop.log"),
   PRECEDENT_LOOP_WORKSPACES_PATH: workspaceConfigPath,
@@ -38,38 +37,13 @@ try {
       workspaces: [{ name: "alpha", paths: [workspacePath] }],
     }),
   );
-  await writeFixture(
-    join(repositoryPath, "assets/workspaces/alpha/documents/smoke.md"),
-    [
-      "---",
-      `id: ${assetId}`,
-      "type: DOCUMENT",
-      "scope: WORKSPACE",
-      "workspace: alpha",
-      "title: Build smoke Asset",
-      "summary: verifies compiled HTTP MCP",
-      "---",
-      "compiled-main-search-token current-markdown-token",
-      "",
-    ].join("\n"),
-  );
-  await writeFixture(
-    join(repositoryPath, "assets/global/memories/smoke.md"),
-    [
-      "---",
-      `id: ${globalAssetId}`,
-      "type: MEMORY",
-      "scope: GLOBAL",
-      "title: Global build smoke Asset",
-      "summary: GLOBAL remains visible without capabilities",
-      "---",
-      "compiled-main-search-token global body",
-      "",
-    ].join("\n"),
-  );
   await mkdir(dirname(databasePath), { recursive: true });
   // Startup never migrates; use the compiled offline installation commands.
   await runNodeOk(join("dist", "maintenance-cli.js"), ["init-database", "--offline"]);
+  seedAssets(databasePath, [
+    { assetId, type: "DOCUMENT", scope: "WORKSPACE", workspace: "alpha", title: "Build smoke Asset", summary: "verifies compiled HTTP MCP", bodyMarkdown: "compiled-main-search-token current-markdown-token" },
+    { assetId: globalAssetId, type: "MEMORY", scope: "GLOBAL", workspace: null, title: "Global build smoke Asset", summary: "GLOBAL remains visible without capabilities", bodyMarkdown: "compiled-main-search-token global body" },
+  ]);
   // WorkspaceCapability is issued only by the trusted host adapter.
   const capabilityId = parseCapabilities((await runNodeOk(
     join("dist", "hook", "user-prompt-submit.js"),
@@ -94,20 +68,20 @@ try {
   assert.deepEqual(tools.tools.find(tool => tool.name === "knowledge_recall")._meta, { "anthropic/alwaysLoad": true });
   const candidateInput = { capabilityIds: [capabilityId], type: "MEMORY", title: "构建候选", summary: "临时仓库中的结构化候选验证", conclusion: "结构化候选在隔离目录内通过正式构建的 MCP 入口写入，生成后仍须人工确认。", conditions: "仅此临时构建样本", verified: "调用并核对身份与返回字段", requestId: "build-structured-candidate" };
   const prepared = success(await client.callTool({ name: "candidate_prepare", arguments: candidateInput }));
-  assert.match(prepared.path, /inbox\/workspaces\/alpha\/memories\//u);
+  assert.equal("path" in prepared, false); assert.match(prepared.candidateId, /^cnd[0-9]+$/);
   assert.match(prepared.display, /请在 Hub 候选管理中审核/u);
   assert.deepEqual(success(await client.callTool({ name: "candidate_prepare", arguments: candidateInput })), prepared);
   const review = success(await client.callTool({ name: "candidate_prepare", arguments: { ...candidateInput, requestId: "build-review" } }));
   assert.equal(review.status, "REVIEW_REQUIRED");
   assert.deepEqual(review.pendingCandidates.map(item => item.candidateId), [prepared.candidateId]);
   assert.equal(review.omittedBodies, 0);
-  const updateInput = { capabilityIds: [capabilityId], candidateId: prepared.candidateId, candidateHash: prepared.contentHash,
+  const updateInput = { capabilityIds: [capabilityId], candidateId: prepared.candidateId, candidateVersion: prepared.version,
     title: candidateInput.title, summary: candidateInput.summary, bodyMarkdown: review.pendingCandidates[0].bodyMarkdown + "\n\n补充：构建产物通过 HTTP MCP 修改后，仍需人工审核才能正式入库。", requestId: "build-update" };
   const updated = success(await client.callTool({ name: "candidate_update", arguments: updateInput }));
   assert.equal(updated.candidateId, prepared.candidateId);
   assert.equal(updated.assetId, prepared.assetId);
   assert.equal(updated.changed, true);
-  assert.notEqual(updated.contentHash, prepared.contentHash);
+  assert.notEqual(updated.version, prepared.version);
   assert.match(updated.display, /已回到待审/u);
   assert.deepEqual(success(await client.callTool({ name: "candidate_update", arguments: updateInput })), updated);
   const independent = success(await client.callTool({ name: "candidate_prepare", arguments: { ...candidateInput, requestId: "build-review", reviewedCandidateIds: [prepared.candidateId] } }));
@@ -133,7 +107,7 @@ try {
     arguments: { capabilityIds: [capabilityId], recallItemId: recallItem.recallItemId },
   }));
   assert.match(read.markdown, /current-markdown-token/);
-  assert.equal(read.contentHash, recallItem.contentHash);
+  assert.equal(read.version, recallItem.version);
 
   const usedArguments = { capabilityIds: [capabilityId], readRef: read.readRef };
   const used = success(await client.callTool({ name: "asset_mark_used", arguments: usedArguments }));

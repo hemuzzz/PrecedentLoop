@@ -1,16 +1,14 @@
-import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { CandidateService, candidateSelectionSchema, candidateTargetSchema, contentFieldsSchema, requestIdSchema, type CandidateTarget, type PrepareItem } from "../asset/candidate-service.js";
+import { CandidateService, candidateSelectionSchema, candidateTargetSchema, contentFieldsSchema, requestIdSchema, inputHash, displayContent, type CandidateTarget, type PrepareItem } from "../asset/candidate-service.js";
 import { allowed, required, fields, evidenceFields, evidenceSchema, candidatePrepareInputSchema, normalizeStructuredContent, pendingCandidateComparison, renderStructuredCandidate } from "../asset/structured-candidate.js";
 import { checkStructuredContent, checkRelatedAssets, StructuredCandidateError } from "../asset/structured-candidate-checks.js";
-import { RepositoryOperationError, releaseAssets } from "../asset/coordination.js";
-import { inputHash } from "../asset/file-transaction.js";
+import { RepositoryOperationError } from "../asset/errors.js";
 import { providerAvailability, readAiConfiguration, runAiCli, type AiProvider, type CliRunner } from "./cli.js";
-import { loadWorkspaceConfig } from "../asset/scanner.js";
+import { loadWorkspaceConfig } from "../workspace/config.js";
 import { initializeCodexWorkspaces } from "../workspace/codex-projects.js";
 
 const cleanText = z.string().refine(value => !/[\u0000\uD800-\uDFFF]/u.test(value), "文本不是有效的无损 Unicode");
@@ -58,7 +56,6 @@ export interface AiTestResult { success: boolean; durationMs: number; error?: { 
 export class AiService {
   #run: Run | undefined;
   #closing = false;
-  readonly #pendingRelease = new Set<string>();
   readonly #resources: string;
   readonly #configuration: string;
   readonly #runner: CliRunner;
@@ -135,9 +132,6 @@ export class AiService {
       if (!run.committing) run.controller.abort();
       await run.done;
     }
-    // Recovery and coordination must complete before shutdown is acknowledged.
-    await this.candidates.initialize();
-    for (const owner of this.#pendingRelease) { await releaseAssets(this.candidates.options.repositoryPath, owner); this.#pendingRelease.delete(owner); }
   }
   private async start(operation: "import" | "rewrite", input: ImportInput | RewriteInput): Promise<AiOperationStatus> {
     if (this.#closing) throw new RepositoryOperationError("AI_SHUTTING_DOWN", "程序正在退出，不能开始 AI 操作");
@@ -165,16 +159,14 @@ export class AiService {
     return run.status;
   }
   private async execute(run: Run, operation: "import" | "rewrite", input: ImportInput | RewriteInput): Promise<void> {
-    const owner = randomUUID();
-    this.#pendingRelease.add(owner);
     let directory: string | undefined;
     let finalStatus: AiOperationStatus | undefined;
     try {
       const provider = await this.provider(input.provider);
       let payload: object;
-      let references: Awaited<ReturnType<CandidateService["freezeReferences"]>> | undefined;
+      let references: Awaited<ReturnType<CandidateService["references"]>> | undefined;
       let targets: CandidateTarget[] = [];
-      let pendingRefs = new Map<string, string>();
+      let pendingRefs = new Map<string, number>();
       let pendingComparisonLimited = false;
       if (operation === "import") {
         const batch = input as ImportInput;
@@ -182,25 +174,25 @@ export class AiService {
         if (batch.targets.length) targets = batch.targets;
         else targets = [{ scope: "GLOBAL" }, ...(await this.importWorkspaces()).map(workspace => ({ scope: "WORKSPACE" as const, workspace }))];
         const config = await loadWorkspaceConfig(this.candidates.options.workspaceConfigPath);
-        references = await this.candidates.freezeReferences(targets, owner);
-        const pending = (await this.candidates.pendingCandidates()).filter(({ asset }) => asset && (!batch.targets.length || targets.some(target => matchesTarget(target, asset.frontmatter))));
+        references = await this.candidates.references(targets);
+        const pending = (await this.candidates.pendingCandidates()).filter(({ record }) => !batch.targets.length || targets.some(target => matchesTarget(target, record)));
         const comparison = pendingCandidateComparison(pending);
         pendingComparisonLimited = comparison.omittedBodies > 0;
         const comparable = comparison.pendingCandidates.filter(item => "type" in item);
-        pendingRefs = new Map(comparable.map((item, index) => [String(index), item.candidateId]));
+        pendingRefs = new Map(comparable.map((item, index) => [String(index), item.number]));
         const pendingCandidates = comparable.map((item, index) => ({ pendingRef: String(index),
           type: item.type, scope: item.scope, workspace: item.workspace, title: item.title, summary: item.summary,
           ...("bodyMarkdown" in item ? { bodyMarkdown: item.bodyMarkdown } : { bodyOmitted: true }) }));
         payload = { operation, classification: batch.targets.length ? "SELECTED" : "AUTO", instructions: batch.instructions, sources: batch.sources.map((source, index) => ({ sourceKey: String(index), ...source })),
           targets: targets.map((target, index) => ({ targetKey: String(index), ...target,
             ...(target.scope === "WORKSPACE" ? { description: config.workspaces.find(workspace => workspace.name === target.workspace)?.description ?? "" } : {}) })),
-          existingAssets: references.references.map((asset, index) => ({ existingAssetRef: String(index), type: asset.frontmatter.type,
-            targetKey: String(targets.findIndex(target => matchesTarget(target, asset.frontmatter))), content: asset.markdown })),
+          existingAssets: references.references.map((asset, index) => ({ existingAssetRef: String(index), type: asset.type,
+            targetKey: String(targets.findIndex(target => matchesTarget(target, asset))), content: displayContent(asset) })),
           comparisonLimited: references.limited, pendingCandidates, pendingComparisonLimited };
       } else {
         const revision = input as RewriteInput;
-        const frozen = await this.candidates.freezeRewrite(revision, owner);
-        payload = { operation, instructions: revision.instructions, candidate: frozen.candidate.markdown, baseline: frozen.baseline?.markdown ?? null };
+        const snapshot = await this.candidates.rewriteInput(revision);
+        payload = { operation, instructions: revision.instructions, candidate: displayContent(snapshot.candidate), baseline: snapshot.baseline ? displayContent(snapshot.baseline) : null };
       }
       if (run.controller.signal.aborted) throw interrupted();
       directory = await mkdtemp(join(tmpdir(), "precedent-loop-ai-"));
@@ -222,43 +214,53 @@ export class AiService {
           const target = targets.find((_, index) => String(index) === candidate.targetKey);
           if (!target || candidate.sourceKeys.some(key => !sourceKeys.has(key)) || new Set(candidate.sourceKeys).size !== candidate.sourceKeys.length) throw invalidOutput("AI 返回了未允许的范围或来源");
           const existing = candidate.existingAssetRef === null ? undefined : references!.references.find((_, index) => String(index) === candidate.existingAssetRef);
-          if (candidate.existingAssetRef !== null && (!existing || !matchesTarget(target, existing.frontmatter) || existing.frontmatter.type !== candidate.type)) throw invalidOutput("AI 修订引用与已冻结的输入不一致");
+          if (candidate.existingAssetRef !== null && (!existing || !matchesTarget(target, existing) || existing.type !== candidate.type)) throw invalidOutput("AI 修订引用与已提供的输入不一致");
           const related = (candidate.related ?? []).map(item => {
             const asset = references!.references.find((_, index) => String(index) === item.existingAssetRef);
             if (!asset) throw invalidOutput("AI 返回了未提供的相关知识引用");
-            return { assetId: asset.frontmatter.id, relation: item.relation };
+            return { assetId: asset.assetId, relation: item.relation };
           });
           const content = normalizeStructuredContent(candidatePrepareInputSchema.parse({ capabilityIds: [], type: candidate.type, title: candidate.title, summary: candidate.summary,
             ...Object.fromEntries(allowed[candidate.type].map(name => [name, candidate[name] ?? undefined])),
             evidence: candidate.evidence?.map(item => ({ ...item, processing: item.processing ?? undefined, sourceHint: item.sourceHint ?? undefined, sourceTime: item.sourceTime ?? undefined })),
-            revision: existing ? { assetId: existing.frontmatter.id, baselineHash: existing.contentHash } : undefined }));
+            revision: existing ? { assetId: existing.assetId, baseVersion: existing.version } : undefined }));
           return { content, target, existing, related };
         });
         const warnings = [...parsed.warnings, ...(references!.limited ? ["本次只比较了有界的现有知识输入，不能据此认定全库无重复。"] : []),
           ...(pendingComparisonLimited ? ["本次只比较了部分待审候选的正文，不能据此认定没有重复的待审候选。"] : [])];
-        const pendingAssetIds = new Set((await this.candidates.pendingCandidates()).map(({ record }) => record.assetId));
         const items: PrepareItem[] = [];
+        const itemRelations: Array<{ target: CandidateTarget; related: Array<{ assetId: string; relation: string }> }> = [];
         for (const { content, target, existing, related } of normalized) {
           try {
             checkStructuredContent({ ...content, related });
             const checkedRelated = checkRelatedAssets(related, target, references!.references);
-            if (existing && pendingAssetIds.has(existing.frontmatter.id)) throw new RepositoryOperationError("CANDIDATE_CONFLICT", "修订目标已有待审候选");
             items.push({ title: content.title, summary: content.summary, type: content.type, target,
               bodyMarkdown: renderStructuredCandidate(content, checkedRelated, new Date().toISOString(), "导入"),
-              ...(existing ? { existingAssetId: existing.frontmatter.id, baselineHash: existing.contentHash } : {}) });
+              ...(existing ? { existingAssetId: existing.assetId, baseVersion: existing.version } : {}) });
+            itemRelations.push({ target, related });
           } catch (error) {
-            if (!(error instanceof RepositoryOperationError) || !["CONTENT_CONTAINS_SECRET", "CONTENT_DEPENDS_ON_LINKS", "RELATED_ASSET_INVALID", "CANDIDATE_CONFLICT"].includes(error.code)) throw error;
+            if (!(error instanceof RepositoryOperationError) || !["CONTENT_CONTAINS_SECRET", "CONTENT_DEPENDS_ON_LINKS", "RELATED_ASSET_INVALID"].includes(error.code)) throw error;
             warnings.push(`候选《${content.title}》未写入：${error.code}${error instanceof StructuredCandidateError ? `（${error.field}）` : ""}`);
           }
         }
         run.committing = true;
-        result = await this.candidates.prepare(input.requestId, items, owner, { requestInput: input, sourceResults: parsed.sourceResults.map(source => ({ sourceKey: source.sourceKey, name: batch.sources[Number(source.sourceKey)]!.name,
-          explanation: `${source.explanation}${source.pendingRef !== null ? `（待审候选 #${pendingRefs.get(source.pendingRef)!}）` : ""}` })), warnings });
+        result = await this.candidates.prepare(input.requestId, items, { requestInput: input, sourceResults: parsed.sourceResults.map(source => ({ sourceKey: source.sourceKey, name: batch.sources[Number(source.sourceKey)]!.name,
+          explanation: `${source.explanation}${source.pendingRef !== null ? `（待审候选 #${pendingRefs.get(source.pendingRef)!}）` : ""}` })), warnings,
+          itemWarning: (index, assets) => {
+            const { target, related } = itemRelations[index]!;
+            try { checkRelatedAssets(related, target, assets.list(target.scope === "WORKSPACE" ? [target.workspace] : [])); }
+            catch (error) {
+              if (!(error instanceof RepositoryOperationError) || error.code !== "RELATED_ASSET_INVALID") throw error;
+              return `候选《${items[index]!.title}》未写入：RELATED_ASSET_INVALID`;
+            }
+            return undefined;
+          },
+        });
       } else {
         const parsed = rewriteOutputSchema.parse(output);
         checkStructuredContent(parsed.content);
         run.committing = true;
-        result = await this.candidates.rewrite(input as RewriteInput, parsed.content, owner, input);
+        result = await this.candidates.rewrite(input as RewriteInput, parsed.content, input);
       }
       finalStatus = { requestId: input.requestId, state: "SUCCEEDED", operation, result };
     } catch (error) {
@@ -270,8 +272,6 @@ export class AiService {
       finalStatus = receipt ? { requestId: input.requestId, state: "SUCCEEDED", operation, result: receipt.result }
         : { requestId: input.requestId, state: "FAILED", operation, error: detail };
     } finally {
-      try { await releaseAssets(this.candidates.options.repositoryPath, owner); this.#pendingRelease.delete(owner); }
-      catch { /* recovery retains the lock; close()/next access must resolve it */ }
       if (directory) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
       run.status = finalStatus!;
     }
@@ -284,6 +284,6 @@ export class AiService {
   }
 }
 function targetKey(target: CandidateTarget): string { return target.scope === "GLOBAL" ? "GLOBAL" : `WORKSPACE:${target.workspace}`; }
-function matchesTarget(target: CandidateTarget, value: { scope: "GLOBAL" | "WORKSPACE"; workspace?: string }): boolean { return target.scope === value.scope && (target.scope === "GLOBAL" || target.workspace === value.workspace); }
+function matchesTarget(target: CandidateTarget, value: { scope: "GLOBAL" | "WORKSPACE"; workspace?: string | null }): boolean { return target.scope === value.scope && (target.scope === "GLOBAL" || target.workspace === value.workspace); }
 function interrupted(): RepositoryOperationError { return new RepositoryOperationError("AI_INTERRUPTED", "AI 操作已中断，本次未提交"); }
 function invalidOutput(message: string): RepositoryOperationError { return new RepositoryOperationError("AI_OUTPUT_INVALID", `${message}，本次未提交`); }

@@ -25,7 +25,7 @@ async function waitUntil(check, message) {
 }
 try {
   const { config, assetId } = await prepareFixture(join(template, 'Contents/Resources'), join(root, 'fixture'));
-  const { assetRepositoryPath, databasePath, workspaceConfigPath, logPath, desktopLogPath, ...userConfig } = config;
+  const { databasePath, workspaceConfigPath, logPath, desktopLogPath, ...userConfig } = config;
   await writeAppConfig(resolveUserData(identity), appConfigSchema.parse(userConfig));
   const buildConfig = {};
   installed = await packageApp(buildConfig, join(root, 'installed'), identity);

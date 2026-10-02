@@ -129,12 +129,10 @@ function formatUptime(seconds: number): string {
             </dl>
           </section>
           <section class="system-card" aria-labelledby="repository-status-section">
-            <header class="system-card-heading"><h2 id="repository-status-section">知识库</h2><span class="system-dot" :class="tone(ready(status.index.indexState) && !status.index.rebuildRequired)">{{ ready(status.index.indexState) && !status.index.rebuildRequired ? '正常' : displayValue(status.index.indexState) }}</span></header>
+            <header class="system-card-heading"><h2 id="repository-status-section">知识库</h2></header>
             <dl class="system-fields">
-              <div><dt>正式 / 候选</dt><dd>{{ formatCount(status.repository.formalAssetCount) }} / {{ formatCount(status.repository.inboxAssetCount) }}</dd></div>
-              <div><dt>索引</dt><dd>{{ formatCount(status.index.catalogCount) }} 条 · {{ formatOptionalDate(status.index.lastSuccessfulScanAt) }} 扫描</dd></div>
-              <div><dt>需要重建</dt><dd :class="{ 'system-warning': status.index.rebuildRequired }">{{ status.index.rebuildRequired ? '是' : '否' }}</dd></div>
-              <div><dt>位置</dt><dd><code :title="status.repository.assetRepositoryPath" class="system-ellipsis">{{ status.repository.assetRepositoryPath }}</code></dd></div>
+              <div><dt>正式 / 候选</dt><dd>{{ formatCount(status.storage.formalAssetCount) }} / {{ formatCount(status.storage.inboxAssetCount) }}</dd></div>
+              <div><dt>存储版本</dt><dd>{{ status.storage.schemaVersion }}</dd></div>
             </dl>
           </section>
           <section class="system-card" aria-labelledby="agent-status-section">
@@ -144,25 +142,17 @@ function formatUptime(seconds: number): string {
             </dl>
             <p v-else class="system-note">请在桌面应用中查看 Agent 的连接情况。</p>
           </section>
-          <section class="system-card" aria-labelledby="watcher-status-section">
-            <header class="system-card-heading"><h2 id="watcher-status-section">文件监听</h2><span class="system-dot" :class="tone(status.index.watcherState === 'RUNNING')">{{ displayValue(status.index.watcherState) }}</span></header>
-            <dl class="system-fields">
-              <div><dt>说明</dt><dd>知识文件变化后自动更新索引</dd></div>
-              <div><dt>全文索引</dt><dd>{{ formatCount(status.index.ftsCount) }} 条</dd></div>
-            </dl>
-          </section>
+
         </div>
         <details class="system-diagnostics">
           <summary><UiIcon :name="status.diagnostics.length ? 'warning' : 'check'" />诊断信息（{{ status.diagnostics.length }}）</summary>
           <p v-if="!status.diagnostics.length" class="system-note">本次检查未返回诊断信息。</p>
           <ol v-else class="system-diagnostic-list">
-            <li v-for="(diagnostic, index) in status.diagnostics" :key="`${diagnostic.source}:${diagnostic.relativePath ?? ''}:${diagnostic.code}:${index}`">
+            <li v-for="(diagnostic, index) in status.diagnostics" :key="`${diagnostic.source}:${diagnostic.code}:${index}`">
               <details>
                 <summary><UiIcon name="warning" /><span>{{ diagnostic.message }}</span><span class="tag warning">{{ diagnostic.source }}</span></summary>
                 <dl class="system-diagnostic-fields">
                   <div><dt>诊断代码</dt><dd><code>{{ diagnostic.code }}</code></dd></div>
-                  <div v-if="diagnostic.relativePath"><dt>相对路径</dt><dd><code>{{ diagnostic.relativePath }}</code></dd></div>
-                  <div v-if="diagnostic.occurredAt"><dt>发生时间</dt><dd><time :datetime="diagnostic.occurredAt">{{ formatDate(diagnostic.occurredAt) }}</time></dd></div>
                 </dl>
               </details>
             </li>

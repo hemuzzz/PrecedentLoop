@@ -3,7 +3,7 @@ import test, { mock } from "node:test";
 
 import { ID_PREFIXES, SnowflakeIdGenerator } from "../src/index.js";
 
-test("generates and validates the three prefixed decimal ID formats", () => {
+test("generates and validates all prefixed decimal ID formats", () => {
   const generator = new SnowflakeIdGenerator();
 
   for (const prefix of ID_PREFIXES) {
@@ -17,6 +17,8 @@ test("generates and validates the three prefixed decimal ID formats", () => {
 
   assert.equal(generator.validate("ast_123"), false);
   assert.equal(generator.validate("other123"), false);
+  assert.equal(generator.validate(generator.next("cnd"), "cnd"), true);
+  assert.equal(generator.validate("cnd_123"), false);
   assert.equal(generator.validate(generator.next("ast"), "tsk"), false);
 });
 
