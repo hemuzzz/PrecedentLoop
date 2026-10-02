@@ -89,18 +89,13 @@ try {
     headers: { origin, "content-type": "application/json" },
     body: "{}",
   }), 403, "WRITE_SESSION_INVALID");
-  await expectError(fetch(`${origin}/api/inbox/backfill-terms`, {
-    method: "POST", headers: { origin, "content-type": "application/json" },
-    body: JSON.stringify({ requestId: "no-token", provider: "codex" }),
-  }), 403, "WRITE_SESSION_INVALID");
-  for (const action of ["dismiss-issue", "draft-revision", "retrieval-check"]) await expectError(fetch(`${origin}/api/inbox/${action}`, {
+  for (const action of ["dismiss-issue", "draft-revision"]) await expectError(fetch(`${origin}/api/inbox/${action}`, {
     method: "POST", headers: { origin, "content-type": "application/json" }, body: "{}",
   }), 403, "WRITE_SESSION_INVALID");
   const { IssueService } = await import("../dist/asset/issue-service.js");
   new IssueService(databasePath).record({ sessionId: "smoke", turnId: "turn", knowledgeIssues: [{ assetId, kind: "INCOMPLETE", detail: "隔离样本问题" }] }, "CODEX");
   const inbox = await fetch(`${origin}/api/inbox`).then(response => response.json());
   assert.equal(inbox.data.issueCards.length, 1); assert.equal(inbox.data.issueCards[0].assetId, assetId);
-  assert.equal(inbox.data.pendingRetrievalCheckCount, 1);
   const overview = await fetch(`${origin}/api/overview`).then(response => response.json());
   assert.equal(overview.data.scopes.reduce((n, scope) => n + scope.inboxCount, 0), 1);
   const { data: { token } } = await fetch(`${origin}/api/inbox/session`).then(response => response.json());

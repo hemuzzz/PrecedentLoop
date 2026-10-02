@@ -133,7 +133,8 @@ CREATE TABLE IF NOT EXISTS used_event (
 );
 CREATE INDEX IF NOT EXISTS used_event_asset ON used_event(asset_id);
 
--- 待修订问题：使用时反馈、召回自测与引用核对发现的知识问题，经候选页处理。
+-- 待修订问题：使用时反馈的知识问题，经候选页处理；保留历史自测与引用核对问题。
+-- UNREACHABLE／BROKEN_REFERENCE／RETRIEVAL_CHECK／REFERENCE_CHECK 已停用，不再产生；保留原约束及 check_id 外键。
 CREATE TABLE IF NOT EXISTS asset_issue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   issue_id TEXT NOT NULL UNIQUE,
@@ -157,7 +158,7 @@ CREATE TABLE IF NOT EXISTS asset_issue (
   CHECK (status <> 'DRAFTED' OR candidate_id IS NOT NULL)
 );
 
--- 召回自测结果：每次对一个目标（正式知识或候选）的确切版本测试一次。
+-- 召回自测结果已停用、不再写入；保留表结构与历史数据，使新库与已有库一致。
 CREATE TABLE IF NOT EXISTS retrieval_check (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   check_id TEXT NOT NULL UNIQUE,

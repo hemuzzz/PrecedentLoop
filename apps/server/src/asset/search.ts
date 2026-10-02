@@ -146,7 +146,7 @@ export function buildFtsAndQuery(terms: readonly string[]): string {
   return terms.map(escapeFtsLiteral).join(" AND ");
 }
 
-export function literalFieldTier(
+function literalFieldTier(
   fields: {title: string; summary: string; retrievalTerms: string; body: string; combined: string},
   query: NormalizedSearchQuery,
 ): number {
@@ -172,7 +172,7 @@ export function literalFieldTier(
   return 2;
 }
 
-export function ftsFieldTier(fields: {title: string; summary: string; retrievalTerms: string; body: string; combined: string}, terms: readonly string[]): number {
+function ftsFieldTier(fields: {title: string; summary: string; retrievalTerms: string; body: string; combined: string}, terms: readonly string[]): number {
   if (terms.some((term) => fields.title.includes(term))) {
     return 3;
   }

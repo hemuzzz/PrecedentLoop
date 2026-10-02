@@ -9,7 +9,7 @@ const sources: Record<AssetIssue["source"], string> = { CODEX: "Codex", CLAUDE: 
   <ul class="issue-list">
     <li v-for="issue in issues" :key="issue.issueId">
       <div class="issue-heading"><strong>{{ kinds[issue.kind] }}</strong><span>{{ sources[issue.source] }} · 报告时版本 {{ issue.assetVersion }} · {{ issue.status === 'DRAFTED' ? '已起草修订' : '待处理' }}</span></div>
-      <p :aria-label="issue.kind === 'BROKEN_REFERENCE' ? '失效路径' : issue.kind === 'UNREACHABLE' ? '未命中问法' : '问题说明'">{{ issue.detail }}</p>
+      <p aria-label="问题说明">{{ issue.detail }}</p>
       <p v-if="issue.evidence" class="issue-evidence">依据：{{ issue.evidence }}</p>
       <p v-if="issue.queries?.length" class="issue-evidence">未命中查询词：{{ issue.queries.join(' · ') }}</p>
       <button v-if="dismissible" type="button" class="quiet-button" :disabled="disabled" @click.stop="$emit('dismiss', issue.issueId)">驳回问题</button>

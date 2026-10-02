@@ -10,7 +10,6 @@ import { CandidateRepository, type CandidateRecord, type WriteOperation } from "
 import { RepositoryOperationError } from "./errors.js";
 import { IssueRepository, type AssetIssue } from "./issue-repository.js";
 import type { IssueDraft } from "./issue-service.js";
-import { RetrievalCheckRepository, type RetrievalCheck } from "./retrieval-check-repository.js";
 
 export const requestIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/u);
 export const versionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -32,7 +31,7 @@ export type PrepareItem = z.infer<typeof prepareItemSchema>;
 export type CandidateSelection = z.infer<typeof candidateSelectionSchema>;
 export interface CandidateSummary { candidateId: string; number: number; assetId: string; version: number; intent: "NEW" | "REVISION" }
 export interface CandidateBatchResult { candidates: CandidateSummary[]; count: number; warnings: string[]; sourceResults: unknown[] }
-export type ManagedInboxItem = CandidateRecord & { knowledgeNumber: number | null; baselineMarkdown?: string; currentFormalVersion?: number; issues: AssetIssue[]; retrievalCheck: RetrievalCheck | null };
+export type ManagedInboxItem = CandidateRecord & { knowledgeNumber: number | null; baselineMarkdown?: string; currentFormalVersion?: number; issues: AssetIssue[] };
 export interface CandidateOptions { databasePath: string; workspaceConfigPath: string }
 
 export class CandidateService {
@@ -42,17 +41,15 @@ export class CandidateService {
   async list(bucket?: "PENDING" | "DEFERRED") {
     const config = await loadWorkspaceConfig(this.options.workspaceConfigPath);
     return this.read((repository, assets) => {
-      const checks = new RetrievalCheckRepository(repository.database);
       const cards = new IssueRepository(repository.database).cards().filter(row => row.scope === "GLOBAL" || config.workspaces.some(workspace => workspace.name === row.workspace));
       const items: ManagedInboxItem[] = repository.list().filter(row => (!bucket || row.status === bucket) &&
         (row.scope === "GLOBAL" || config.workspaces.some(workspace => workspace.name === row.workspace))).map(row => {
         const formal = assets.get(row.assetId);
         return { ...row, knowledgeNumber: formal?.knowledgeNumber ?? null, issues: cards.find(card => card.assetId === row.assetId)?.issues ?? [],
-          retrievalCheck: checks.latest({ kind: "CANDIDATE", id: row.candidateId }, row.version),
           ...(formal ? { baselineMarkdown: displayContent(formal), currentFormalVersion: formal.version } : {}) };
       });
       return { items, issueCards: cards.filter(card => !repository.byAsset(card.assetId)),
-        pendingRetrievalCheckCount: checks.targets(config.workspaces.map(row => row.name)).length, diagnostics: [], managed: true };
+        diagnostics: [], managed: true };
     });
   }
   async pendingCandidates(): Promise<Array<{ record: CandidateRecord }>> {

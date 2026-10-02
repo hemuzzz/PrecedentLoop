@@ -36,10 +36,6 @@ async function copyCode(event: MouseEvent): Promise<void> {
 
 <template>
   <div class="candidate-summary">
-    <section class="summary-section">
-      <h3>召回自测 · {{ item.retrievalCheck ? item.retrievalCheck.passed ? '通过' : '未通过' : '尚未自测' }}</h3>
-      <p v-for="(result, index) in item.retrievalCheck?.result" :key="index">{{ result.question }}<br />{{ result.hit ? '命中' : '未命中' }} · {{ result.rank === null ? '无匹配' : `第 ${result.rank} 名` }}<br />查询词：{{ result.queries.join(' · ') }}</p>
-    </section>
     <section v-if="item.intent === 'REVISION' && item.issues?.length" class="summary-section">
       <h3>接受后将关闭的问题</h3>
       <p>包含起草之后报告的问题，请确认本次修订是否已处理。</p>

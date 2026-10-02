@@ -188,7 +188,7 @@ test("AI test is a protected write route with a fixed payload and never records 
   } finally { await f.cleanup(); }
 });
 
-test("issue REST groups cards, counts them in overview/status and protects dismiss/draft/backfill writes", async () => {
+test("issue REST groups cards, counts them in overview/status and protects dismiss/draft writes", async () => {
   const f = await fixture();
   try {
     const pending = (await f.prepare("issue-asset", [content()])).candidates[0]!;
@@ -207,7 +207,7 @@ test("issue REST groups cards, counts them in overview/status and protects dismi
     assert.equal(await count(), 1);
     const attached = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ issues: unknown[] }>; issueCards: unknown[] } };
     assert.equal(attached.data.items[0]!.issues.length, 1); assert.equal(attached.data.issueCards.length, 0);
-    for (const route of ["dismiss-issue", "draft-revision", "backfill-terms", "retrieval-check"]) {
+    for (const route of ["dismiss-issue", "draft-revision"]) {
       for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
         assert.equal((await f.post(`/api/inbox/${route}`, {}, headers)).status, 403);
     }
@@ -226,54 +226,6 @@ test("issue REST groups cards, counts them in overview/status and protects dismi
       operation = result.data.operation; if (operation?.state !== "RUNNING") break; await delay(10);
     }
     assert.equal(operation?.state, "FAILED"); assert.equal(operation.error?.code, "VERSION_CONFLICT");
-  } finally { await f.cleanup(); }
-});
-
-test("terms backfill requires a write token, strict provider input and returns progress through the shared status route", async () => {
-  const f = await fixture();
-  try {
-    const input = { requestId: "terms-rest", provider: "codex" };
-    for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
-      assert.equal((await f.post("/api/inbox/backfill-terms", input, headers)).status, 403);
-    assert.equal((await f.post("/api/inbox/backfill-terms", { ...input, assetId: "ast1" })).status, 400);
-    assert.equal((await f.post("/api/inbox/backfill-terms", { requestId: "terms-rest" })).status, 400);
-    assert.equal((await f.post("/api/inbox/backfill-terms", { ...input, provider: "other" })).status, 400);
-    assert.equal((await f.post("/api/inbox/backfill-terms", input)).status, 200);
-    let operation: { state: string; result: unknown } | undefined;
-    for (let attempt = 0; attempt < 100; attempt++) {
-      const response = await (await f.get("/api/inbox/operation?requestId=terms-rest")).json() as { data: { operation: typeof operation } };
-      operation = response.data.operation;
-      if (operation?.state !== "RUNNING") break;
-      await delay(10);
-    }
-    assert.equal(operation?.state, "SUCCEEDED");
-    assert.deepEqual(operation?.result, { total: 0, processed: 0, written: 0, items: [] });
-    assert.equal(await f.service.receipt("terms-rest"), undefined);
-  } finally { await f.cleanup(); }
-});
-
-test("retrieval check REST requires token and strict target/provider input, reports status and pending count", async () => {
-  const f = await fixture();
-  try {
-    const input = { requestId: "check-rest", provider: "codex" };
-    for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
-      assert.equal((await f.post("/api/inbox/retrieval-check", input, headers)).status, 403);
-    for (const extra of [{ provider: "other" }, { target: { kind: "ASSET", id: "cnd1" } }, { target: { kind: "CANDIDATE", id: "ast1" } }, { extra: true }])
-      assert.equal((await f.post("/api/inbox/retrieval-check", { ...input, ...extra })).status, 400);
-    assert.equal((await f.post("/api/inbox/retrieval-check?extra=true", input)).status, 400);
-    assert.equal((await f.post("/api/inbox/retrieval-check", { requestId: "missing-provider" })).status, 400);
-    assert.equal((await f.post("/api/inbox/retrieval-check", input)).status, 200);
-    let operation: { state: string; result: unknown } | undefined;
-    for (let attempt = 0; attempt < 100; attempt++) {
-      operation = ((await (await f.get("/api/inbox/operation?requestId=check-rest")).json()) as { data: { operation: typeof operation } }).data.operation;
-      if (operation?.state !== "RUNNING") break;
-      await delay(10);
-    }
-    assert.equal(operation?.state, "SUCCEEDED"); assert.deepEqual(operation?.result, { done: 0, total: 0, items: [] });
-    assert.equal(await f.service.receipt(input.requestId), undefined);
-    await f.prepare("pending-check", [content()]);
-    const inbox = (await (await f.get("/api/inbox")).json()) as { data: { pendingRetrievalCheckCount: number; items: Array<{ retrievalCheck: unknown }> } };
-    assert.equal(inbox.data.pendingRetrievalCheckCount, 1); assert.equal(inbox.data.items[0]!.retrievalCheck, null);
   } finally { await f.cleanup(); }
 });
 

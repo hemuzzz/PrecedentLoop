@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { storedRetrievalTermsSchema, retrievalTermsSchema, type AssetScope, type AssetType } from "./schema.js";
+import { storedRetrievalTermsSchema, type AssetScope, type AssetType } from "./schema.js";
 import { RepositoryOperationError } from "./errors.js";
 
 export interface AssetContent { title: string; summary: string; retrievalTerms: string[]; bodyMarkdown: string }
@@ -18,7 +18,6 @@ const map = (row: AssetRow): AssetRecord => {
   return { ...row, retrievalTerms: storedRetrievalTermsSchema.parse(JSON.parse(row.retrievalTerms)),
     previousContent: previous && { ...previous, retrievalTerms: storedRetrievalTermsSchema.parse(previous.retrievalTerms ?? []) } };
 };
-export interface TermsBackfillItem { assetId: string; version: number; retrievalTerms: string[] }
 
 export class AssetRepository {
   constructor(readonly database: Database.Database) {}
@@ -74,25 +73,6 @@ export class AssetRepository {
       AND status IN ('PENDING','DEFERRED')`).get(assetId)) throw new RepositoryOperationError("ASSET_HAS_OPEN_CANDIDATE", "请先处理该知识的待审或暂存候选");
     if (this.database.prepare("UPDATE asset SET is_deleted=1,updated_at=? WHERE asset_id=? AND is_deleted = 0")
       .run(new Date().toISOString(), assetId).changes !== 1) throw new RepositoryOperationError("ASSET_NOT_FOUND", "知识不存在或已删除");
-  }
-
-  missingRetrievalTerms(): AssetRecord[] {
-    return this.database.prepare<[], AssetRow>(`SELECT ${selection} FROM asset a
-      WHERE a.retrieval_terms='[]' AND a.is_deleted = 0 ORDER BY a.asset_id`).all().map(map);
-  }
-
-  backfillTerms(items: TermsBackfillItem[]): Array<{ assetId: string; written: boolean }> {
-    return this.database.transaction(() => items.map(item => {
-      const terms = retrievalTermsSchema.parse(item.retrievalTerms);
-      const result = this.database.prepare(`UPDATE asset SET retrieval_terms=?,updated_at=?
-        WHERE asset_id=? AND version=? AND retrieval_terms='[]' AND is_deleted = 0`)
-        .run(JSON.stringify(terms), new Date().toISOString(), item.assetId, item.version);
-      if (result.changes === 1) {
-        this.database.prepare("DELETE FROM asset_fts WHERE asset_id=?").run(item.assetId);
-        this.index(this.get(item.assetId)!);
-      }
-      return { assetId: item.assetId, written: result.changes === 1 };
-    })).immediate();
   }
 
   private index(input: NewAsset): void {

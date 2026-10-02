@@ -46,7 +46,7 @@ test("P2 database automatically gains issue and check tables without changing an
     INSERT INTO asset_candidate(candidate_id,asset_id,intent,asset_type,asset_scope,title,summary,body_markdown,status)
       VALUES ('cnd1','ast2','NEW','MEMORY','GLOBAL','pending','summary','body','PENDING');
     INSERT INTO recall_operation(recall_id,authorized_workspaces_json,queries_json,diagnostics_json,budget_json) VALUES ('usg1','[]','[]','[]','{}');`);
-  const tables = PERSISTENT_TABLES.filter(name => name !== "asset_issue" && name !== "retrieval_check");
+  const tables = PERSISTENT_TABLES.filter(name => name !== "asset_issue");
   const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
   assert.throws(() => openDatabase(path, { readonly: true }), { code: "DATABASE_SCHEMA_INVALID" });
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='asset_issue'").get(), undefined);
@@ -56,7 +56,23 @@ test("P2 database automatically gains issue and check tables without changing an
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('asset_issue','retrieval_check') AND sql IS NOT NULL").all(), []);
 });
 
-test("issue and retrieval-check CHECK constraints reject invalid enums, source identities, JSON and drafted links", async t => {
+test("retired check table is optional for reads and still restored by additive completion", async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const asset = await f.seed(); f.report(asset.assetId);
+  const before = f.issues.active();
+  f.db.exec("DROP TABLE retrieval_check");
+  const readOnly = openDatabase(f.options.databasePath, { readonly: true });
+  try {
+    assert.deepEqual(new IssueRepository(readOnly).active(), before);
+    assert.equal(readOnly.prepare("SELECT name FROM sqlite_master WHERE name='retrieval_check'").get(), undefined);
+  } finally { readOnly.close(); }
+  assert.deepEqual((await f.service.list()).issueCards[0]!.issues, before);
+  openDatabase(f.options.databasePath).close();
+  assert.deepEqual(f.db.prepare("SELECT count(*) AS n FROM retrieval_check").get(), { n: 0 });
+  assert.deepEqual(f.issues.active(), before);
+});
+
+test("issue and retired check table CHECK constraints reject invalid enums, source identities, JSON and drafted links", async t => {
   const f = await fixture(); t.after(() => f.close()); const asset = await f.seed();
   const insert = f.db.prepare(`INSERT INTO asset_issue(issue_id,asset_id,asset_version,kind,detail,queries,source,session_id,turn_id,check_id,status,candidate_id,is_deleted)
     VALUES (@issueId,@assetId,@version,@kind,@detail,@queries,@source,@sessionId,@turnId,@checkId,@status,@candidateId,@deleted)`);
@@ -67,11 +83,16 @@ test("issue and retrieval-check CHECK constraints reject invalid enums, source i
   const check = f.db.prepare(`INSERT INTO retrieval_check(check_id,target_kind,target_id,target_version,result,passed,is_deleted) VALUES ('chk1',?,'ast1',?,?,?,?)`);
   for (const values of [["OTHER", 0, "[]", 1, 0], ["ASSET", -1, "[]", 1, 0], ["ASSET", 0, "{", 1, 0], ["ASSET", 0, "[]", 2, 0], ["ASSET", 0, "[]", 1, 2]])
     assert.throws(() => check.run(...values), /CHECK/);
-  // Constraint fixtures are the only check writes in P3; no production path writes this table.
+  // Only historical-data fixtures write the retired table; production paths no longer do.
   check.run("ASSET", 0, "[]", 1, 0);
   assert.throws(() => insert.run({ ...base, checkId: "chk1" }), /CHECK/);
-  insert.run({ ...base, source: "RETRIEVAL_CHECK", sessionId: null, turnId: null, checkId: "chk1" });
+  insert.run({ ...base, kind: "UNREACHABLE", source: "RETRIEVAL_CHECK", sessionId: null, turnId: null, checkId: "chk1" });
   assert.throws(() => insert.run({ ...base, issueId: "isu2", source: "REFERENCE_CHECK", sessionId: null, turnId: null, checkId: "chk1" }), /CHECK/);
+  insert.run({ ...base, issueId: "isu2", kind: "BROKEN_REFERENCE", source: "REFERENCE_CHECK", sessionId: null, turnId: null });
+  assert.deepEqual(new Set((await f.service.list()).issueCards[0]!.issues.map(row => row.kind)), new Set(["UNREACHABLE", "BROKEN_REFERENCE"]));
+  f.issueService.dismiss({ issueId: "isu1" }); f.issueService.dismiss({ issueId: "isu2" });
+  assert.deepEqual(f.issues.active(), []);
+  assert.deepEqual(f.db.prepare("SELECT check_id FROM retrieval_check").all(), [{ check_id: "chk1" }]);
 });
 
 test("assessment records valid issues with current version, skips invalid or deleted assets and leaves the cache and Stop unchanged", async t => {
@@ -141,7 +162,6 @@ test("same-turn feedback replaces only OPEN issues, absent field preserves them,
   f.db.transaction(() => f.issues.draft(asset.assetId, [replacement.issueId], candidate.candidateId)).immediate();
   await record([issue(asset.assetId)]); assert.equal(f.issues.active().length, 2);
   await record([]); assert.deepEqual(f.issues.active().map(row => row.status), ["DRAFTED"]);
-  assert.deepEqual(f.db.prepare("SELECT count(*) AS n FROM retrieval_check").get(), { n: 0 });
   assert.deepEqual(f.db.prepare("SELECT DISTINCT operation FROM write_operation ORDER BY operation").all(), [{ operation: "accept" }, { operation: "prepare" }]);
 });
 
@@ -242,7 +262,7 @@ for (const race of ["asset", "candidate", "issue", "existing-candidate", "existi
   if (!candidate && race !== "candidate") assert.equal((await f.service.list()).items.length, 0);
 });
 
-test("draft revision holds the shared AI slot, rejects invalid output and never creates a check record", async t => {
+test("draft revision holds the shared AI slot, rejects invalid output", async t => {
   const f = await fixture(); t.after(() => f.close()); const asset = await f.seed(); f.report(asset.assetId);
   let enter!: () => void, release!: () => void;
   const ready = new Promise<void>(resolve => { enter = resolve; });
@@ -251,13 +271,12 @@ test("draft revision holds the shared AI slot, rejects invalid output and never 
   t.after(() => ai.close());
   await ai.draftRevision({ requestId: "invalid", assetId: asset.assetId, provider: "codex" }); await ready;
   try {
-    await assert.rejects(ai.backfillTerms({ requestId: "busy", provider: "codex" }), { code: "AI_BUSY" });
+    await assert.rejects(ai.import({ requestId: "busy", provider: "codex", sources: [{ name: "input.md", content: "隔离输入" }] }), { code: "AI_BUSY" });
     await assert.rejects(ai.draftRevision({ requestId: "busy-draft", assetId: asset.assetId, provider: "codex" }), { code: "AI_BUSY" });
   } finally { release(); }
   const status = await finished(ai, "invalid"); assert.equal(status.state, "FAILED"); assert.equal(status.error?.code, "AI_OUTPUT_INVALID");
   assert.equal((await f.service.list()).items.length, 0); assert.equal(f.issues.active()[0]!.status, "OPEN");
   assert.equal(await f.service.receipt("invalid"), undefined);
-  assert.deepEqual(f.db.prepare("SELECT count(*) AS n FROM retrieval_check").get(), { n: 0 });
 });
 
 test("issue linkage failures roll back candidate acceptance, rejection and receipts", async t => {

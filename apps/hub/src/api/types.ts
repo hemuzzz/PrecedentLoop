@@ -32,7 +32,6 @@ export interface AssetDetail extends AssetLibraryItem {
 }
 
 export interface InboxItem {
-  retrievalCheck: RetrievalCheck | null;
   issues?: AssetIssue[];
   knowledgeNumber: number | null;
   candidateId: string;
@@ -55,7 +54,6 @@ export interface InboxItem {
 }
 
 export interface InboxResult {
-  pendingRetrievalCheckCount: number;
   managed?: boolean;
   items: InboxItem[];
   issueCards: IssueCard[];
@@ -63,15 +61,12 @@ export interface InboxResult {
 
 export type { AssetIssue, IssueCard } from "../../../server/src/asset/issue-repository.js";
 import type { AssetIssue, IssueCard } from "../../../server/src/asset/issue-repository.js";
-import type { CheckQuestion, RetrievalCheck } from "../../../server/src/asset/retrieval-check-repository.js";
 
 export interface AiOperation {
   requestId: string;
   state: "RUNNING" | "SUCCEEDED" | "FAILED" | "NOT_COMMITTED";
   operation?: string;
-  result?: { count?: number; changed?: boolean; candidateId?: string; explanation?: string; warnings?: string[]; sourceResults?: Array<{ name: string; explanation: string }>;
-    total?: number; done?: number; processed?: number; written?: number; items?: Array<{ assetId?: string; id?: string; kind?: string;
-      title: string; retrievalTerms?: string[]; skippedReason?: string; passed?: boolean; result?: CheckQuestion[] }> };
+  result?: { count?: number; changed?: boolean; candidateId?: string; explanation?: string; warnings?: string[]; sourceResults?: Array<{ name: string; explanation: string }> };
   error?: { code: string; message: string };
 }
 export interface AiProvider { id: "codex" | "claude"; available: boolean; reason?: string; isDefault?: boolean }

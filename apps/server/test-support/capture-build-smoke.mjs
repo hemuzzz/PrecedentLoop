@@ -55,7 +55,6 @@ try {
   try {
     assert.deepEqual(database.prepare("SELECT count(*) AS n FROM asset_issue WHERE is_deleted=0").get(), { n: 4 });
     assert.deepEqual(database.prepare("SELECT count(*) AS n FROM write_operation").get(), receiptsBefore);
-    assert.deepEqual(database.prepare("SELECT count(*) AS n FROM retrieval_check").get(), { n: 0 });
   } finally { database.close(); }
   assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: "invalid" }, true), { recorded: true, issues: { recorded: 0, error: "ISSUES_INVALID" } });
   assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: [null, withIssues.knowledgeIssues[0], {}, {}, {}] }, true), {

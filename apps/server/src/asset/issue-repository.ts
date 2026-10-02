@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import type { AssetScope, AssetType } from "./schema.js";
 import { RepositoryOperationError } from "./errors.js";
 
@@ -43,24 +42,6 @@ export class IssueRepository {
     this.database.prepare(`UPDATE asset_issue SET is_deleted=1,updated_at=?
       WHERE session_id=? AND turn_id=? AND status='OPEN' AND is_deleted = 0`)
       .run(new Date().toISOString(), sessionId, turnId);
-  }
-  upsertCheckIssue(issue: Pick<AssetIssue, "assetId" | "assetVersion" | "detail" | "queries"> & {
-    kind: "UNREACHABLE" | "BROKEN_REFERENCE"; source: "RETRIEVAL_CHECK" | "REFERENCE_CHECK"; checkId: string | null;
-  }): void {
-    this.assertTransaction();
-    const prior = this.database.prepare<[string, number, string], { issueId: string; status: AssetIssue["status"] }>(`
-      SELECT i.issue_id AS issueId,i.status FROM asset_issue i JOIN asset a ON a.asset_id=i.asset_id AND a.is_deleted = 0
-      WHERE i.asset_id=? AND i.asset_version=? AND i.kind=? AND i.is_deleted = 0 ORDER BY i.id DESC LIMIT 1`)
-      .get(issue.assetId, issue.assetVersion, issue.kind);
-    if (prior) {
-      if (prior.status === "OPEN") this.database.prepare(`UPDATE asset_issue SET detail=?,queries=?,check_id=?,updated_at=?
-        WHERE issue_id=? AND status='OPEN' AND is_deleted = 0`).run(issue.detail, issue.queries === null ? null : JSON.stringify(issue.queries),
-          issue.checkId, new Date().toISOString(), prior.issueId);
-      return;
-    }
-    this.database.prepare(`INSERT INTO asset_issue (issue_id,asset_id,asset_version,kind,detail,queries,source,check_id,status)
-      VALUES (?,?,?,?,?,?,?,?,'OPEN')`).run(new SnowflakeIdGenerator().next("isu"), issue.assetId, issue.assetVersion, issue.kind,
-        issue.detail, issue.queries === null ? null : JSON.stringify(issue.queries), issue.source, issue.checkId);
   }
   insert(issue: Pick<AssetIssue, "issueId" | "assetId" | "assetVersion" | "kind" | "detail" | "evidence" | "queries"> & {
     source: "CODEX" | "CLAUDE"; sessionId: string; turnId: string;
