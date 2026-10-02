@@ -58,7 +58,9 @@ for (const scenario of scenarios) {
       assert.equal(recall.items.some(item => item.assetId === asset.assetId), !inaccessible);
       if (scenario === "document" || scenario === "skill") {
         const item = recall.items.find(item => item.assetId === asset.assetId)!;
-        assert.equal(item.deliveredMode, "ON_DEMAND"); assert.equal(item.summary, undefined);
+        assert.equal("deliveredMode" in item, false); assert.equal(item.summary, undefined);
+        const fact = f.projection.items("i.asset_id=?", item.assetId)[0]!;
+        assert.equal(fact.deliveredMode, "ON_DEMAND");
         assert.doesNotMatch(JSON.stringify(recall), /REFERENCE_ONLY_SUMMARY|CURRENT_BODY/u);
       }
       if (scenario === "updated" || scenario === "global") assert.match(JSON.stringify(recall), /CURRENT_ALLOWED_SUMMARY/u);
@@ -121,6 +123,6 @@ test("U04 an oversized qualified title is omitted while a legal sibling and all 
     assert.doesNotMatch(JSON.stringify(result), /过长标题|QUALIFIED_BUT_OVERSIZED/u);
     assert.equal(f.repository.readFact(read.readRef!)!.assetId, oversized.assetId);
     assert.deepEqual(f.rows().read_operation, before.read_operation);
-    assert.deepEqual(f.projection.items("i.recall_id=?", result.recallId!).map(item => item.assetId), [sibling.assetId]);
+    assert.deepEqual(f.projection.items("i.recall_id=?", f.projection.recalls().items[0]!.recallId).map(item => item.assetId), [sibling.assetId]);
   } finally { await f.close(); }
 });

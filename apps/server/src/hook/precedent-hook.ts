@@ -25,15 +25,15 @@ export async function runPrecedentHook(args = process.argv.slice(2)): Promise<vo
   const fail = (error: unknown) => {
     logFailure(userData, error);
     if (recording) {
-      process.stderr.write("Precedent Loop: assessment not recorded.\nFormat: sessionId, turnId, outcome (NO_INCREMENT|CANDIDATE|FAILED|SKIPPED), reason, references (required for CANDIDATE).\n");
+      process.stderr.write("Precedent Loop: assessment not recorded.\nFormat: sessionId, turnId, outcome (NO_INCREMENT|CANDIDATE|FAILED|SKIPPED), reason, references (required for CANDIDATE); optional knowledgeIssues: [{assetId, kind, detail, evidence?, missedQueries (required for MISSED)}].\n");
       process.exitCode = 1;
     }
   };
-  // Set before reading stdin/importing SQLite; capture never waits for a database.
+  // Set before reading stdin/importing SQLite; record includes a bounded database write.
   const timer = setTimeout(() => {
     fail(new Error("Hook timeout"));
     process.exit(recording ? 1 : 0);
-  }, args[1] === "user-prompt-submit" ? 9000 : 750);
+  }, args[1] === "user-prompt-submit" ? 9000 : recording ? 3000 : 750);
   try {
     userData = hookUserData(args.slice(2));
     const host = args[0]; const event = args[1];
@@ -48,7 +48,7 @@ export async function runPrecedentHook(args = process.argv.slice(2)): Promise<vo
     for await (const chunk of process.stdin) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       size += bytes.length;
-      if (size > (recording ? 8192 : 1_000_000)) throw new Error("Input too large");
+      if (size > (recording ? 16384 : 1_000_000)) throw new Error("Input too large");
       chunks.push(bytes);
     }
     const input: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -67,8 +67,7 @@ export async function runPrecedentHook(args = process.argv.slice(2)): Promise<vo
     } else {
       const { handleCaptureHook, recordAssessment } = await import("./capture-assessment.js");
       if (recording) {
-        await recordAssessment(configuration.captureCachePath, input, hostName);
-        output = '{"recorded":true}';
+        output = JSON.stringify(await recordAssessment(configuration.captureCachePath, input, hostName, configuration.databasePath));
       } else output = JSON.stringify(await handleCaptureHook(input, configuration.captureCachePath, hostName, onError));
     }
     if (!recording) {

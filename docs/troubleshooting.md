@@ -33,9 +33,9 @@ If the agent reports `CAPABILITY_UNAVAILABLE`, the project-recognition hook coul
 
 ## Storage cannot be opened
 
-The current baseline is **2**. `DATABASE_VERSION_UNSUPPORTED` means the database has a different version; `DATABASE_SCHEMA_INVALID` means the database or a required table is missing. Do not change `user_version` by hand or initialize over an existing database. Startup and app updates do not repair or upgrade schemas.
+The database no longer uses `user_version`. `DATABASE_SCHEMA_INVALID` means the database or a required table is missing. When opening an existing database containing the `asset` table for writing, the server automatically adds missing tables, columns, indexes and full-text index structure, rebuilding the derived full-text index when needed. This preserves existing data; changes to existing columns or constraints require separate handling. Read-only connections only check required tables. Empty databases require explicit `init-database --offline`; startup and app updates do not initialize them. Do not initialize over an existing schema or change `user_version` to try to repair it.
 
-The desktop app recognizes existing data by its valid `.precedentloop.json` marker and version 2 database. A folder containing only a marker or a version 0 database is incomplete; use Setup's explicit initialization for a new, empty database. See [Configuration](configuration.md#data-folder) for recognition rules.
+The desktop app recognizes initialized data by its valid `.precedentloop.json` marker and a valid SQLite header with a positive schema cookie (the schema change counter). A marker with a missing database or a schema cookie of 0 is incomplete; use Setup's explicit initialization for a new, empty database. An invalid SQLite header is unsupported. See [Configuration](configuration.md#data-folder) for recognition rules.
 
 ## Full-text index needs rebuilding
 

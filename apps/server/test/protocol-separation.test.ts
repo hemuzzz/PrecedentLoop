@@ -100,21 +100,24 @@ test("beyond the context bound, the cwd project is kept, the rest are omitted by
 
 test("both hosts deliver bounded context with filled record template and no protocol dependency", async t => {
   const f = await fixture(t);
+  const lengths: Array<{ host: string; context: number; unavailable: number }> = [];
   await writeFile(f.workspaceConfigPath, JSON.stringify({ schemaVersion: 1, workspaces: Array.from({ length: 1000 }, (_, index) => ({ name: `workspace-${index}`, paths: [join(f.root, String(index))] })) }));
   for (const host of ["codex", "claude"] as const) {
     const captureCommand = `"$HOME/.precedent/bin/precedent-hook" ${host} record`;
     const identity = { session_id: "11111111-1111-4111-8111-111111111111", turn_id: "22222222-2222-4222-8222-222222222222", prompt_id: "33333333-3333-4333-8333-333333333333" };
     const output = context(await handleCodexHook({ ...f.input, ...identity }, { ...f, captureCommand }, host));
     const withoutCapabilities = output.replace(/(Precedent Loop WorkspaceCapability\n)[^\n]+/u, "$1");
-    assert.ok(withoutCapabilities.length <= 1500, `length=${withoutCapabilities.length}`);
+    assert.ok(output.includes("用到的知识过时、有误、不完整、标题误导或换说法才召回到，且不能直接修订时，记录中加 knowledgeIssues：[{assetId,kind,detail,evidence?,missedQueries?}]，kind 取 OUTDATED|INACCURATE|INCOMPLETE|MISLEADING|MISSED，detail 写明哪里不对与已知现状。"));
     assert.doesNotMatch(output, /Skills|KNOWLEDGE|协议位置/);
     assert.ok(output.includes(`cat <<'EOF' | ${captureCommand}`));
     assert.ok(output.includes(`"sessionId":"${identity.session_id}"`));
     assert.ok(output.includes(`"turnId":"${host === "codex" ? identity.turn_id : identity.prompt_id}"`));
     const unavailable = context(await handleCodexHook({ ...f.input, ...identity }, { captureCommand }, host));
-    assert.ok(unavailable.length <= 1500, `unavailable length=${unavailable.length}`);
+    lengths.push({ host, context: withoutCapabilities.length, unavailable: unavailable.length });
     for (const outcome of ["NO_INCREMENT", "CANDIDATE", "FAILED", "SKIPPED"]) assert.ok(output.includes(outcome));
   }
+  t.diagnostic(JSON.stringify(lengths));
+  assert.ok(lengths.every(value => value.context <= 1800 && value.unavailable <= 1800), JSON.stringify(lengths));
 });
 
 test("both hosts preserve complete 128-character identities in the record template", async t => {

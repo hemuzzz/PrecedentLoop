@@ -82,7 +82,7 @@ for (const committed of [false, true]) test(`process death ${committed ? "after"
       import {CandidateRepository} from ${JSON.stringify(resolve("src/asset/candidate-repository.ts"))};
       const db=openDatabase(${JSON.stringify(f.options.databasePath)}), repository=new CandidateRepository(db);
       repository.write('crash','prepare','input',()=>{
-        repository.insert({candidateId:'cnd1',assetId:'ast1',intent:'NEW',baseVersion:null,type:'MEMORY',scope:'GLOBAL',workspace:null,title:'title',summary:'summary',bodyMarkdown:'A'});
+        repository.insert({candidateId:'cnd1',assetId:'ast1',intent:'NEW',baseVersion:null,type:'MEMORY',scope:'GLOBAL',workspace:null,title:'title',summary:'summary',retrievalTerms:[],bodyMarkdown:'A'});
         if(!${committed}) process.exit(73);
         return {count:1};
       }); process.exit(73);
@@ -96,7 +96,7 @@ test("another process rejects stale versions while unrelated candidates remain w
   const f = await fixture();
   try {
     const [a, b] = (await f.prepare("both", [content("A"), content("B")])).candidates;
-    await f.service.rewrite(selection(a!, "rewrite"), { title: "changed", summary: "summary", bodyMarkdown: "changed" });
+    await f.service.rewrite(selection(a!, "rewrite"), { title: "changed", summary: "summary", retrievalTerms: content().retrievalTerms, bodyMarkdown: "changed" });
     const { stdout } = await exec(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
       import { CandidateService } from ${JSON.stringify(resolve("src/asset/candidate-service.ts"))};
       try { await new CandidateService(${JSON.stringify(f.options)}).reject(${JSON.stringify(selection(a!, "reject-stale"))}); }
@@ -113,7 +113,7 @@ test("readers cannot observe an uncommitted batch", async () => {
   const f = await fixture(); const db = new Database(f.options.databasePath);
   try {
     db.exec("BEGIN IMMEDIATE");
-    new CandidateRepository(db).insert({ candidateId: "cnd1", assetId: "ast1", intent: "NEW", baseVersion: null, type: "MEMORY", scope: "GLOBAL", workspace: null, title: "title", summary: "summary", bodyMarkdown: "body" });
+    new CandidateRepository(db).insert({ candidateId: "cnd1", assetId: "ast1", intent: "NEW", baseVersion: null, type: "MEMORY", scope: "GLOBAL", workspace: null, title: "title", summary: "summary", retrievalTerms: [], bodyMarkdown: "body" });
     assert.equal((await f.service.list()).items.length, 0);
     db.exec("COMMIT");
     assert.equal((await f.service.list()).items.length, 1);
@@ -151,7 +151,7 @@ test("unchanged rewrites return to pending without increasing the content versio
   try {
     const item = (await f.prepare("a", [content()])).candidates[0]!;
     await f.service.defer({ ...selection(item, "defer"), deferred: true });
-    const rewrite = await f.service.rewrite(selection(item, "no-change"), { title: content().title, summary: content().summary, bodyMarkdown: content().bodyMarkdown });
+    const rewrite = await f.service.rewrite(selection(item, "no-change"), { title: content().title, summary: content().summary, retrievalTerms: content().retrievalTerms, bodyMarkdown: content().bodyMarkdown });
     assert.equal(rewrite.changed, false); assert.equal(rewrite.version, 0);
     assert.equal((await f.service.list("PENDING")).items.length, 1);
     assert.equal((await f.service.list("DEFERRED")).items.length, 0);
@@ -165,7 +165,7 @@ test("rewrite and rejection restore content and status when receipt insertion fa
     await f.service.defer({ ...selection(item, "defer"), deferred: true });
     const before = (await f.service.list()).items[0]!;
     db.exec("CREATE TRIGGER reject_receipt BEFORE INSERT ON write_operation BEGIN SELECT RAISE(ABORT,'injected'); END");
-    await assert.rejects(f.service.rewrite(selection(item, "rewrite"), { title: "新标题", summary: "新摘要", bodyMarkdown: "新正文" }), /injected/);
+    await assert.rejects(f.service.rewrite(selection(item, "rewrite"), { title: "新标题", summary: "新摘要", retrievalTerms: content().retrievalTerms, bodyMarkdown: "新正文" }), /injected/);
     await assert.rejects(f.service.reject(selection(item, "reject")), /injected/);
     assert.deepEqual((await f.service.list("DEFERRED")).items[0], before);
     assert.equal(await f.service.operation("rewrite"), undefined); assert.equal(await f.service.operation("reject"), undefined);

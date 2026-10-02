@@ -38,7 +38,7 @@ try {
     }),
   );
   await mkdir(dirname(databasePath), { recursive: true });
-  // Startup never migrates; use the compiled offline installation commands.
+  // Empty databases still require the compiled offline initialization command.
   await runNodeOk(join("dist", "maintenance-cli.js"), ["init-database", "--offline"]);
   seedAssets(databasePath, [
     { assetId, type: "DOCUMENT", scope: "WORKSPACE", workspace: "alpha", title: "Build smoke Asset", summary: "verifies compiled HTTP MCP", bodyMarkdown: "compiled-main-search-token current-markdown-token" },
@@ -66,7 +66,7 @@ try {
   const toolNames = ["knowledge_recall", "asset_read", "asset_mark_used", "candidate_prepare", "candidate_update"];
   assert.deepEqual(tools.tools.map(({ name }) => name), toolNames);
   assert.deepEqual(tools.tools.find(tool => tool.name === "knowledge_recall")._meta, { "anthropic/alwaysLoad": true });
-  const candidateInput = { capabilityIds: [capabilityId], type: "MEMORY", title: "构建候选", summary: "临时仓库中的结构化候选验证", conclusion: "结构化候选在隔离目录内通过正式构建的 MCP 入口写入，生成后仍须人工确认。", conditions: "仅此临时构建样本", verified: "调用并核对身份与返回字段", requestId: "build-structured-candidate" };
+  const candidateInput = { capabilityIds: [capabilityId], type: "MEMORY", title: "构建候选", summary: "临时仓库中的结构化候选验证", retrievalTerms: ["构建候选", "MCP 写入", "隔离验证"], conclusion: "结构化候选在隔离目录内通过正式构建的 MCP 入口写入，生成后仍须人工确认。", conditions: "仅此临时构建样本", verified: "调用并核对身份与返回字段", requestId: "build-structured-candidate" };
   const prepared = success(await client.callTool({ name: "candidate_prepare", arguments: candidateInput }));
   assert.equal("path" in prepared, false); assert.match(prepared.candidateId, /^cnd[0-9]+$/);
   assert.match(prepared.display, /请在 Hub 候选管理中审核/u);
@@ -75,8 +75,9 @@ try {
   assert.equal(review.status, "REVIEW_REQUIRED");
   assert.deepEqual(review.pendingCandidates.map(item => item.candidateId), [prepared.candidateId]);
   assert.equal(review.omittedBodies, 0);
+  assert.deepEqual(review.pendingCandidates[0].retrievalTerms, candidateInput.retrievalTerms);
   const updateInput = { capabilityIds: [capabilityId], candidateId: prepared.candidateId, candidateVersion: prepared.version,
-    title: candidateInput.title, summary: candidateInput.summary, bodyMarkdown: review.pendingCandidates[0].bodyMarkdown + "\n\n补充：构建产物通过 HTTP MCP 修改后，仍需人工审核才能正式入库。", requestId: "build-update" };
+    title: candidateInput.title, summary: candidateInput.summary, retrievalTerms: candidateInput.retrievalTerms, bodyMarkdown: review.pendingCandidates[0].bodyMarkdown + "\n\n补充：构建产物通过 HTTP MCP 修改后，仍需人工审核才能正式入库。", requestId: "build-update" };
   const updated = success(await client.callTool({ name: "candidate_update", arguments: updateInput }));
   assert.equal(updated.candidateId, prepared.candidateId);
   assert.equal(updated.assetId, prepared.assetId);
@@ -93,6 +94,10 @@ try {
     arguments: { capabilityIds: [capabilityId], queries: ["compiled-main-search-token"] },
   }));
   assert.equal(recalled.usageRecorded, true);
+  assert.deepEqual(Object.keys(recalled).sort(), ["authorizedWorkspaces", "budget", "diagnostics", "items", "reference", "usageRecorded"]);
+  assert.deepEqual(Object.keys(recalled.budget).sort(), ["downgradedCount", "omittedCount"]);
+  assert.ok(recalled.items.every(item => !("deliveredMode" in item) && !("reference" in item) && !("assetScope" in item) && !("assetWorkspace" in item)));
+  assert.ok(Array.from(JSON.stringify(recalled)).length <= 5000);
   assert.deepEqual(recalled.authorizedWorkspaces, ["alpha"]);
   assert.deepEqual(new Set(recalled.items.map((item) => item.assetId)), new Set([assetId, globalAssetId]));
   const globalOnly = success(await client.callTool({

@@ -4,6 +4,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { initializeDatabase, openDatabase } from "../dist/storage/schema.js";
+import { seedAssets } from "./seed-built-assets.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "codex-capture-build-"));
 const entry = fileURLToPath(new URL("../dist/hook/capture-cli.js", import.meta.url));
@@ -12,7 +14,7 @@ const environment = { PATH: process.env.PATH, PRECEDENT_LOOP_CAPTURE_CACHE_PATH:
 function invoke(kind, input, record = false) {
   const start = performance.now();
   const child = spawnSync(process.execPath, [entry, ...(record ? ["--record"] : [])], {
-    input: JSON.stringify(input), encoding: "utf8", env: environment, timeout: 1500,
+    input: JSON.stringify(input), encoding: "utf8", env: environment, timeout: record ? 4000 : 1500,
   });
   times[kind].push(performance.now() - start);
   assert.equal(child.error, undefined);
@@ -36,9 +38,34 @@ try {
   }
   const allEntries = await readdir(root, { recursive: true });
   assert.equal(allEntries.some(path => /sqlite|database|assets|usage/i.test(path)), false);
+  const databasePath = join(root, "isolated.sqlite");
+  initializeDatabase(databasePath);
+  seedAssets(databasePath, [{ assetId: "ast1", type: "MEMORY", scope: "GLOBAL", workspace: null, title: "问题反馈样本", summary: "隔离构建验证", bodyMarkdown: "隔离样本正文" }]);
+  const seeded = openDatabase(databasePath, { readonly: true });
+  let receiptsBefore;
+  try { receiptsBefore = seeded.prepare("SELECT count(*) AS n FROM write_operation").get(); }
+  finally { seeded.close(); }
+  environment.PRECEDENT_LOOP_DATABASE_PATH = databasePath;
+  const withIssues = { sessionId: "synthetic-issues", turnId: "turn", outcome: "NO_INCREMENT", reason: "isolated",
+    knowledgeIssues: Array.from({ length: 4 }, () => ({ assetId: "ast1", kind: "OUTDATED", detail: "中".repeat(500), evidence: "文".repeat(500) })) };
+  assert.ok(Buffer.byteLength(JSON.stringify(withIssues)) > 8192);
+  assert.deepEqual(invoke("record", withIssues, true), { recorded: true, issues: { recorded: 4, skipped: [] } });
+  assert.deepEqual(invoke("stop", { session_id: withIssues.sessionId, turn_id: withIssues.turnId, hook_event_name: "Stop" }), {});
+  const database = openDatabase(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare("SELECT count(*) AS n FROM asset_issue WHERE is_deleted=0").get(), { n: 4 });
+    assert.deepEqual(database.prepare("SELECT count(*) AS n FROM write_operation").get(), receiptsBefore);
+    assert.deepEqual(database.prepare("SELECT count(*) AS n FROM retrieval_check").get(), { n: 0 });
+  } finally { database.close(); }
+  assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: "invalid" }, true), { recorded: true, issues: { recorded: 0, error: "ISSUES_INVALID" } });
+  assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: [null, withIssues.knowledgeIssues[0], {}, {}, {}] }, true), {
+    recorded: true, issues: { recorded: 1, skipped: [{ index: 0, code: "ISSUE_INVALID" }, { index: 2, code: "ISSUE_INVALID" }, { index: 3, code: "ISSUE_INVALID" }, { index: 4, code: "TOO_MANY_ISSUES" }] },
+  });
+  environment.PRECEDENT_LOOP_DATABASE_PATH = join(root, "missing.sqlite");
+  assert.deepEqual(invoke("record", withIssues, true), { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } });
   const timings = Object.fromEntries(Object.entries(times).map(([name, samples]) => {
     const sorted = samples.toSorted((a, b) => a - b);
     return [name, { count: samples.length, medianMs: +sorted[Math.floor(sorted.length / 2)].toFixed(1), maxMs: +sorted.at(-1).toFixed(1) }];
   }));
-  console.log(JSON.stringify({ status: "PASS", environment: "isolated compiled CLI, no database or server", timings }));
+  console.log(JSON.stringify({ status: "PASS", environment: "isolated compiled CLI and temporary database, no server", timings }));
 } finally { await rm(root, { recursive: true, force: true }); }

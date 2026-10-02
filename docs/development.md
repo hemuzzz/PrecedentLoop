@@ -24,7 +24,7 @@ pnpm install --frozen-lockfile
 
 ## Dev mode
 
-The server needs absolute paths for a version 2 database and an existing workspaces file. Initialize a new database in a scratch folder:
+The server needs absolute paths for an initialized database and an existing workspaces file. Initialize a new database in a scratch folder:
 
 ```bash
 mkdir -p /absolute/scratch/{runtime,config,logs}
@@ -35,7 +35,7 @@ export PRECEDENT_LOOP_WORKSPACES_PATH='/absolute/scratch/config/workspaces.json'
 export PRECEDENT_LOOP_LOG_PATH='/absolute/scratch/logs/server.log'
 export PORT='3000'
 
-# Initialize baseline version 2 once in an empty database; existing schemas or data are refused.
+# Explicitly initialize an empty database; existing schemas or data are refused.
 # The maintenance CLI runs from the build output.
 pnpm --filter @precedent-loop/id-generator build
 pnpm --filter @precedent-loop/server build
@@ -44,7 +44,7 @@ pnpm --filter @precedent-loop/server init-database --offline
 pnpm --filter @precedent-loop/server dev
 ```
 
-All DDL lives in `apps/server/src/storage/schema.sql`. `schema.ts` reads that file, and the server build copies it to `dist/storage/schema.sql` alongside the compiled module. Startup checks the baseline and required tables; it does not create or upgrade storage. The initialization command creates the database only; desktop data-folder recognition additionally requires the marker created by Setup, as described in [Configuration](configuration.md#data-folder).
+All DDL lives in `apps/server/src/storage/schema.sql`. `schema.ts` reads that file, and the server build copies it to `dist/storage/schema.sql` alongside the compiled module. The database does not use `user_version`. When opening an existing database containing the `asset` table for writing, the server automatically adds missing tables, columns, indexes and full-text index structure, rebuilding the derived full-text index when needed. This preserves existing data and does not change existing columns or constraints. Read-only connections check required tables without adding structure. Empty databases still require explicit `init-database --offline`; startup and app updates do not initialize them. The initialization command creates the database only; desktop recognition also requires the marker created by Setup and a valid SQLite header with a positive schema cookie (the schema change counter), as described in [Configuration](configuration.md#data-folder).
 
 In a second terminal, start the Hub. Vite proxies `/api` to the server port:
 

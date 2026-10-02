@@ -13,7 +13,8 @@ test("U03 eight independent Recall/Read/Used writers at a frozen millisecond pre
       const read = await service.read({ capabilityIds: [], recallItemId: recall.items[0].recallItemId });
       if (!read.usageRecorded) throw new Error("Read fact missing");
       const used = await service.used({ capabilityIds: [], readRef: read.readRef });
-      console.log(JSON.stringify([recall.recallId, recall.items[0].recallItemId, read.readRef, used.usedId]));
+      const recallId = repository.item(recall.items[0].recallItemId).recallId;
+      console.log(JSON.stringify([recallId, recall.items[0].recallItemId, read.readRef, used.usedId]));
     `)));
     const identities = outputs.flatMap(output => JSON.parse(output) as string[]);
     assert.equal(identities.length, 32); assert.equal(new Set(identities).size, 32);

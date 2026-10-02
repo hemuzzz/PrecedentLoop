@@ -14,7 +14,9 @@ SQLite is the sole source of truth for knowledge, candidates, previous content, 
   logs/
 ```
 
-The desktop app requires a valid `.precedentloop.json` marker and a database with `user_version=2` to recognize an existing data folder. The backend also checks the required tables and workspace configuration. A marker with a missing database or version 0 is an incomplete initialization; a nonempty folder without a marker is not recognized as product data. Other database versions are refused.
+The desktop app requires a valid `.precedentloop.json` marker and a valid SQLite database header with a positive schema cookie (the 4-byte big-endian schema change counter at offset 40) to recognize an initialized data folder. It does not read `user_version` or load SQLite in the main process. A marker with a missing database or a schema cookie of 0 indicates incomplete initialization; a header shorter than 100 bytes or with an invalid SQLite magic string is unsupported. A nonempty folder without a marker is not recognized as product data.
+
+The server checks required tables and workspace configuration. When opening an existing database containing the `asset` table for writing, it automatically adds missing tables, columns, indexes and full-text index structure; the derived full-text index is rebuilt when needed. This preserves existing data and does not change existing columns or constraints. Read-only connections check required tables without adding structure. Empty databases still require explicit `init-database --offline` initialization; startup and app updates do not initialize them.
 
 Setup creates the marker and layout in a new or empty folder, then explicitly runs `init-database --offline` on an empty database. It can resume an incomplete initialization without overwriting existing data. Normal startup and app updates do not initialize or upgrade storage. The marker's `formatVersion`, app configuration versions and workspace `schemaVersion` remain separate from the database baseline.
 
@@ -108,4 +110,4 @@ These are only needed when you run the server or the maintenance CLIs yourself (
 | `PORT` | Server | Listening port. Default `3000` when run standalone. |
 | `PRECEDENT_LOOP_SERVER_PORT` | Hub dev server (Vite) | Port the `/api` proxy forwards to. Default `3000`. |
 
-The database and workspaces paths must be absolute. The database must already contain the complete version 2 schema, and the workspaces file must exist.
+The database and workspaces paths must be absolute. The database must already be initialized, and the workspaces file must exist. The server adds missing structure when opening the database for writing, as described under [Data folder](#data-folder).

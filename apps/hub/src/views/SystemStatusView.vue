@@ -132,7 +132,6 @@ function formatUptime(seconds: number): string {
             <header class="system-card-heading"><h2 id="repository-status-section">知识库</h2></header>
             <dl class="system-fields">
               <div><dt>正式 / 候选</dt><dd>{{ formatCount(status.storage.formalAssetCount) }} / {{ formatCount(status.storage.inboxAssetCount) }}</dd></div>
-              <div><dt>存储版本</dt><dd>{{ status.storage.schemaVersion }}</dd></div>
             </dl>
           </section>
           <section class="system-card" aria-labelledby="agent-status-section">

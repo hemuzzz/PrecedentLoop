@@ -4,8 +4,8 @@ import { AssetNotFoundError } from "../asset/search.js";
 import type { CandidateService } from "../asset/candidate-service.js";
 import type { KnowledgeRepository } from "../knowledge/repository.js";
 import type { KnowledgeProjection } from "../knowledge/projection.js";
-import { DATABASE_VERSION } from "../storage/schema.js";
 import { loadWorkspaceConfig } from "../workspace/config.js";
+import { IssueRepository } from "../asset/issue-repository.js";
 
 export class HubAssetApplicationService {
   constructor(readonly assetSearchService: Pick<AssetSearchService, "listLibrary" | "readLibrary">,
@@ -24,7 +24,7 @@ export type SystemReadiness = "READY" | "DEGRADED";
 export interface StatusDiagnosticDto { code: string; message: string; source: "DATABASE" | "WORKSPACE" }
 export interface SystemStatusDto {
   buildId?: string; diagnostics: StatusDiagnosticDto[];
-  storage: { schemaVersion: number; formalAssetCount: number | null; inboxAssetCount: number | null };
+  storage: { formalAssetCount: number | null; inboxAssetCount: number | null };
   mcpEndpoint: { path: "/mcp"; ready: boolean };
   service: { name: "precedent"; readiness: SystemReadiness; uptimeSeconds: number; version: string };
 }
@@ -40,14 +40,15 @@ export class SystemStatusApplicationService {
     try {
       const workspaces = (await loadWorkspaceConfig(this.dependencies.workspaceConfigPath)).workspaces.map(workspace => workspace.name);
       const counts = this.dependencies.candidateService.read((candidates, assets) => ({
-        assets: assets.list(workspaces).length, candidates: candidates.list().filter(row => row.scope === "GLOBAL" || workspaces.includes(row.workspace!)).length,
+        assets: assets.list(workspaces).length, candidates: candidates.list().filter(row => row.scope === "GLOBAL" || workspaces.includes(row.workspace!)).length
+          + new IssueRepository(candidates.database).cards().filter(row => (row.scope === "GLOBAL" || workspaces.includes(row.workspace!)) && !candidates.byAsset(row.assetId)).length,
       }));
       formalAssetCount = counts.assets; inboxAssetCount = counts.candidates;
     } catch { diagnostics.push({ code: "STORAGE_UNAVAILABLE", message: "无法读取知识或工作区配置", source: "DATABASE" }); }
     return { ...(this.dependencies.buildId ? { buildId: this.dependencies.buildId } : {}),
       service: { name: "precedent", readiness: diagnostics.length ? "DEGRADED" : "READY",
         uptimeSeconds: Math.max(0, this.dependencies.uptimeSeconds?.() ?? process.uptime()), version: "0.0.0" },
-      storage: { schemaVersion: DATABASE_VERSION, formalAssetCount, inboxAssetCount },
+      storage: { formalAssetCount, inboxAssetCount },
       mcpEndpoint: { path: "/mcp", ready: this.dependencies.mcpEndpointReady() }, diagnostics };
   }
 }

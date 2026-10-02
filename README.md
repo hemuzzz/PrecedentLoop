@@ -90,7 +90,7 @@ The app is written to `dist/desktop/`. See [Development](docs/development.md) fo
 
 Already have notes? Use **Import** in the Hub to turn Markdown files into candidates.
 
-The data folder uses database baseline version **2**. The desktop app identifies it by `.precedentloop.json` and `runtime/precedent-loop.sqlite`; setup explicitly initializes a new folder. Startup and app updates do not initialize or upgrade an existing database. See [Configuration](docs/configuration.md#data-folder) for the layout and recognition rules, and [Development](docs/development.md#dev-mode) for standalone initialization.
+The database does not use `user_version`. The desktop app recognizes a data folder by its valid `.precedentloop.json` marker and a valid SQLite header in `runtime/precedent-loop.sqlite` with a positive schema cookie (the schema change counter). Empty databases require explicit `init-database --offline` initialization, which Setup runs for a new folder. When the server opens an existing database containing the `asset` table for writing, it automatically adds missing tables, columns, indexes and full-text index structure, rebuilding the derived full-text index when needed. These additions preserve existing data; changes to existing columns or constraints require separate handling. See [Configuration](docs/configuration.md#data-folder) for the recognition rules, and [Development](docs/development.md#dev-mode) for standalone initialization.
 
 Deleting knowledge in the Hub marks it as deleted in the database. It leaves recall and usage history intact, and is blocked while the knowledge has a pending or deferred candidate. There is currently no restore action.
 

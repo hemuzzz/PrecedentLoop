@@ -14,7 +14,6 @@ export const portSchema = z.number().int().min(1).max(65535);
 export interface LocalSettings {
   dataDirectory: string;
   paths: { databasePath: string; workspaceConfigPath: string; logPath: string; desktopLogPath: string };
-  storageVersion: number | null;
   runtime: { nodeVersion: string; arch: string; modules: string };
   port: number;
   pendingPort: number | null;
@@ -22,7 +21,7 @@ export interface LocalSettings {
   lastDataMove: DataMoveResult | null;
 }
 /** migrate: copy the current data directory to a new, empty location (T2-b).
- * associate: switch to an existing baseline-2 data directory without merging (T2-c). */
+ * associate: switch to an initialized data directory without merging (T2-c). */
 export type DataMoveMode = "migrate" | "associate";
 export interface DataMovePlan {
   /** null when the selected location cannot be used; `reason` explains why. */

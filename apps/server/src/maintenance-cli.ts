@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { KnowledgeRepository } from "./knowledge/repository.js";
-import { DATABASE_VERSION, DatabaseSchemaError, initializeDatabase } from "./storage/schema.js";
+import { DatabaseSchemaError, initializeDatabase } from "./storage/schema.js";
 
 export async function runMaintenanceCli(
   args: readonly string[] = process.argv.slice(2),
@@ -15,7 +15,7 @@ export async function runMaintenanceCli(
     if (command === "init-database") {
       if (args.length !== 2 || args[1] !== "--offline") throw new Error("Use init-database --offline for a new, empty database after stopping writers");
       initializeDatabase(databasePath);
-      stdout.write(`${JSON.stringify({ ok: true, schemaVersion: DATABASE_VERSION })}\n`);
+      stdout.write(`${JSON.stringify({ ok: true })}\n`);
     } else if (command === "revoke-capability") {
       if (args.length !== 3 || args[1] !== "--digest" || !/^[a-f0-9]{64}$/.test(args[2] ?? "")) throw new Error("Use revoke-capability --digest <stored digest>");
       const repository = new KnowledgeRepository(databasePath);

@@ -1,6 +1,6 @@
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import { z } from "zod";
-import { assetIdSchema, assetTypeSchema } from "./schema.js";
+import { assetIdSchema, assetTypeSchema, retrievalTermsSchema } from "./schema.js";
 import { candidateSelectionSchema, contentFieldsSchema, versionSchema, inputHash, matchesTarget, requestIdSchema, type CandidateBatchResult, type CandidateService, type CandidateTarget } from "./candidate-service.js";
 import { RepositoryOperationError } from "./errors.js";
 import { loadWorkspaceConfigSync } from "../workspace/config.js";
@@ -46,6 +46,7 @@ export const candidatePrepareInputSchema = z.object({
   type: assetTypeSchema.describe("默认 MEMORY 保存判断；已验证可重复流程用 SKILL；参考资料用 DOCUMENT。"),
   title: text.max(300).describe("知识标题，明确独立可复用的主题。"),
   summary: text.max(4000).describe("摘要与结论一致，保留关键前提。"),
+  retrievalTerms: retrievalTermsSchema,
   revision: z.object({ assetId: assetIdSchema.describe("待修订正式知识的 ID。"), baseVersion: versionSchema.describe("召回或读取返回的 version。") }).strict().optional().describe("修订时同时提供 assetId 与 baseVersion；不填表示新增。"),
   ...fields,
   evidence: evidenceSchema,
@@ -59,11 +60,11 @@ export const candidatePrepareInputSchema = z.object({
   if (value.type === "DOCUMENT" && /^---\s*\n/u.test(value.bodyMarkdown ?? "")) context.addIssue({ code: "custom", path: ["bodyMarkdown"], message: "正文不得含 Frontmatter" });
 });
 export type StructuredCandidateInput = z.infer<typeof candidatePrepareInputSchema>;
-export type StructuredContent = Pick<StructuredCandidateInput, "type" | "title" | "summary" | "evidence" | "revision" | keyof typeof fields>;
+export type StructuredContent = Pick<StructuredCandidateInput, "type" | "title" | "summary" | "retrievalTerms" | "evidence" | "revision" | keyof typeof fields>;
 
 export function normalizeStructuredContent(input: StructuredContent): StructuredContent {
-  const { type, title, summary, evidence, revision } = input;
-  return { type, title, summary, evidence, revision,
+  const { type, title, summary, retrievalTerms, evidence, revision } = input;
+  return { type, title, summary, retrievalTerms, evidence, revision,
     ...Object.fromEntries(allowed[type].map(name => [name, input[name]])) };
 }
 
@@ -73,6 +74,7 @@ export const candidateUpdateInputSchema = z.object({
   candidateVersion: versionSchema.describe("REVIEW_REQUIRED 附正文清单项中的 candidateVersion，或 candidate_prepare／candidate_update 返回的 version；"),
   title: contentFieldsSchema.shape.title.describe("修改后的完整标题。"),
   summary: contentFieldsSchema.shape.summary.describe("修改后的完整摘要，与正文结论一致。"),
+  retrievalTerms: retrievalTermsSchema,
   bodyMarkdown: contentFieldsSchema.shape.bodyMarkdown.describe("修改后的完整正文，不含 Frontmatter；保留仍然成立的结论、条件和依据。"),
   requestId: requestIdSchema.optional().describe("幂等键；省略由服务端生成并返回，重试复用同一键和输入。"),
 }).strict().refine(value => !/^---\s*\n/u.test(value.bodyMarkdown), { path: ["bodyMarkdown"], message: "正文不得含 Frontmatter" });
@@ -87,7 +89,7 @@ export function pendingCandidateComparison(pending: Awaited<ReturnType<Candidate
     const length = [...record.bodyMarkdown].length;
     if (omittedBodies > 0 || length > remaining) { omittedBodies++; return { ...item, bodyOmitted: true as const }; }
     remaining -= length;
-    return { ...item, bodyMarkdown: record.bodyMarkdown, candidateVersion: record.version };
+    return { ...item, bodyMarkdown: record.bodyMarkdown, retrievalTerms: record.retrievalTerms, candidateVersion: record.version };
   });
   return { pendingCandidates, omittedBodies };
 }
@@ -133,7 +135,7 @@ export async function prepareStructuredCandidate(rawInput: unknown, candidates: 
     result = receipt.result as CandidateBatchResult;
   } else {
     const related = checkRelatedAssets(input.related ?? [], target, await candidates.formalAssets());
-    result = await candidates.prepare(requestId, [{ type: input.type, title: input.title, summary: input.summary, target,
+    result = await candidates.prepare(requestId, [{ type: input.type, title: input.title, summary: input.summary, retrievalTerms: input.retrievalTerms, target,
       bodyMarkdown: renderStructuredCandidate(content, related, new Date().toISOString()),
       ...(input.revision ? { existingAssetId: input.revision.assetId, baseVersion: input.revision.baseVersion } : {}) }], {
       operation: "prepare", requestInput,
@@ -169,7 +171,7 @@ export async function updateStructuredCandidate(rawInput: unknown, candidates: C
   const candidate = (await candidates.pendingCandidates()).find(({ record }) => record.candidateId === input.candidateId)?.record;
   if (!candidate) throw new RepositoryOperationError("CANDIDATE_NOT_FOUND", "候选不存在");
   if (!matchesTarget(candidate, target)) throw new RepositoryOperationError("CAPABILITY_INVALID", "能力与候选范围不符");
-  const fields = { title: input.title, summary: input.summary, bodyMarkdown: input.bodyMarkdown };
+  const fields = { title: input.title, summary: input.summary, retrievalTerms: input.retrievalTerms, bodyMarkdown: input.bodyMarkdown };
   checkStructuredContent(fields);
   const result = await candidates.rewrite({ requestId, candidateId: input.candidateId, candidateVersion: input.candidateVersion, assetId: candidate.assetId }, fields, requestInput, "update");
   return { ...result, requestId, display: `已修改候选 #${result.number}，已回到待审，请在 Hub 候选管理中审核` };

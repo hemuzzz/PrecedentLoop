@@ -47,6 +47,7 @@ export async function handleCodexHook(input: unknown, configuration: HookRuntime
     context.push(`cat <<'EOF' | ${configuration.captureCommand}\n${JSON.stringify({ ...identity, outcome: "NO_INCREMENT", reason: "<具体原因>" })}\nEOF`);
   } catch { context.push("本轮评估标识或命令缺失，不能伪造，需要记录时报告不可用。"); }
   context.push("     outcome 取值：NO_INCREMENT（已评估，无增量，或方案尚未冻结）、CANDIDATE（已准备或并入候选，references 填 candidateId）、FAILED（评估未完成，写明缺口）、SKIPPED（本轮只是澄清或进度）。");
+  context.push("用到的知识过时、有误、不完整、标题误导或换说法才召回到，且不能直接修订时，记录中加 knowledgeIssues：[{assetId,kind,detail,evidence?,missedQueries?}]，kind 取 OUTDATED|INACCURATE|INCOMPLETE|MISLEADING|MISSED，detail 写明哪里不对与已知现状。");
   context.push("- 可用知识能力（按请求的项目名、别名和语义选择 capabilityIds，不默认全选；[] 仅全局）：");
   let repository: KnowledgeRepository | undefined;
   try {

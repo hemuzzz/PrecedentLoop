@@ -92,6 +92,7 @@ test("preparation requires synchronization risk consent and rechecks classificat
     const another = join(separate, "data");
     assert.equal((await second.service.checkDirectory(another)).inspection.kind, "MISSING");
     await fixtureProduct(another, 7, true);
+    await writeFile(dataPaths(another).databasePath, "invalid SQLite header");
     await assert.rejects(second.service.prepareDirectory(request(another)), /目标不是/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -169,9 +170,10 @@ test("recovery rejects unrelated directories and only updates the association to
     await writeAppConfig(userData, original);
     const { service } = await fixture(root);
     assert.equal((await service.getState()).startup.mode, "RECOVERY");
-    await assert.rejects(service.selectRecoveryDirectory(join(root, "new")), /已有本产品/);
-    const old = join(root, "old"); await fixtureProduct(old, 5);
-    await assert.rejects(service.selectRecoveryDirectory(old), /已有本产品/);
+    await assert.rejects(service.selectRecoveryDirectory(join(root, "new")), /已初始化的本产品/);
+    const invalid = join(root, "invalid"); await fixtureProduct(invalid);
+    await writeFile(dataPaths(invalid).databasePath, "invalid SQLite header");
+    await assert.rejects(service.selectRecoveryDirectory(invalid), /已初始化的本产品/);
     assert.deepEqual(await readAppConfig(userData), { kind: "VALID", config: original });
     const valid = join(root, "existing"); await fixtureProduct(valid);
     const before = await readFile(dataPaths(valid).databasePath);
@@ -198,7 +200,7 @@ test("runtime, storage and MCP failures independently block completion, while Ag
     assert.equal((await service.checkCore()).find(item => item.id === "service")?.ok, true);
     await assert.rejects(service.complete(), /核心检查未通过/);
     mcpReady = true;
-    await fixtureProduct(path, 7);
+    await fixtureProduct(path, 0);
     await assert.rejects(service.complete(), /核心检查未通过/);
     await fixtureProduct(path, 2);
     await service.detectAgents(); // Neither Agent is installed in this isolated fixture.

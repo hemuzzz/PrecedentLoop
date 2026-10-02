@@ -52,8 +52,7 @@ export function createMockBridge(scenario: string, options = new URLSearchParams
         : scenario === "S1-d" ? "OTHER_NON_EMPTY" : scenario === "S1-e" ? "NOT_WRITABLE" : scenario === "S1-i" ? "PRODUCT_UNSUPPORTED"
           : scenario === "S1-incomplete" ? "PRODUCT_INCOMPLETE" : "MISSING";
       const actual = kind === "OTHER_NON_EMPTY" ? `${path}/PrecedentLoop` : path;
-      const inspection: DirectoryInspection = kind === "PRODUCT" ? { kind, storageVersion: 2 }
-          : kind === "PRODUCT_UNSUPPORTED" ? { kind, storageVersion: 1, reason: "检测到存储版本 1，当前应用仅支持基线版本 2。请选择已准备好的数据目录。不会升级或覆盖已有数据。" }
+      const inspection: DirectoryInspection = kind === "PRODUCT_UNSUPPORTED" ? { kind, reason: "SQLite 文件头无效。请选择已初始化的本产品数据目录。" }
             : kind === "NOT_WRITABLE" ? { kind, reason: "无法在此目录创建文件。请选择有写入权限的文件夹。" } : { kind };
       return { selectedPath: path, dataDirectory: actual, inspection: scenario === "S1-f" ? { kind: "SYNC_RISK", inspection } : inspection,
         paths: { databasePath: `${actual}/runtime/precedent-loop.sqlite`,
@@ -84,7 +83,7 @@ export function createMockBridge(scenario: string, options = new URLSearchParams
     },
     checkCore: async (): Promise<CoreCheck[]> => (["directory", "storage", "runtime", "service", "mcp"] as const).map(id => ({ id,
       ok: !(scenario === "S4-c" && !retried && ["service", "mcp"].includes(id)),
-      detail: id === "directory" ? directory : id === "storage" ? "基线版本 2 · 存储已就绪" : id === "runtime" ? "内置 Node 22.16.0 · arm64"
+      detail: id === "directory" ? directory : id === "storage" ? "存储已就绪" : id === "runtime" ? "内置 Node 22.16.0 · arm64"
         : id === "mcp" ? "http://127.0.0.1:18888/mcp" : scenario === "S4-c" && !retried ? "本地服务尚未就绪，请重试。" : "服务已就绪" })),
     complete: async () => { /* Development preview stays on the current screen. */ },
     recheck: async () => { retried = true; return getState(); },

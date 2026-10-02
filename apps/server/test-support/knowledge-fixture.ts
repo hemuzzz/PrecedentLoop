@@ -89,15 +89,15 @@ export async function knowledgeFixture() {
   const alpha = (await runtime.capabilities.issueFromTrustedHost(join(root, "alpha")))[0]!.capabilityId;
   const beta = (await runtime.capabilities.issueFromTrustedHost(join(root, "beta")))[0]!.capabilityId;
   const records = new AssetRepository(runtime.repository.db), writes = new CandidateRepository(runtime.repository.db);
-  async function asset(input: { title: string; workspace?: string | null; type?: "MEMORY" | "DOCUMENT" | "SKILL"; summary?: string; body?: string; inbox?: boolean }) {
+  async function asset(input: { title: string; workspace?: string | null; type?: "MEMORY" | "DOCUMENT" | "SKILL"; summary?: string; retrievalTerms?: string[]; body?: string; inbox?: boolean }) {
     const assetId = ids.next("ast"), workspace = input.workspace ?? null;
     const content = { assetId, workspace, scope: workspace ? "WORKSPACE" as const : "GLOBAL" as const,
-      title: input.title, type: input.type ?? "MEMORY" as const, summary: input.summary ?? "summary", bodyMarkdown: input.body ?? "body" };
+      title: input.title, type: input.type ?? "MEMORY" as const, summary: input.summary ?? "summary", retrievalTerms: input.retrievalTerms ?? [], bodyMarkdown: input.body ?? "body" };
     writes.write(ids.next("tsk"), "accept", assetId, () => input.inbox
       ? writes.insert({ ...content, candidateId: ids.next("cnd"), intent: "NEW", baseVersion: null }) : records.insert(content));
     return { assetId, source: content.bodyMarkdown };
   }
-  function revise(assetId: string, content: Partial<{ title: string; summary: string; bodyMarkdown: string }>) {
+  function revise(assetId: string, content: Partial<{ title: string; summary: string; retrievalTerms: string[]; bodyMarkdown: string }>) {
     const current = records.get(assetId)!;
     return writes.write(ids.next("tsk"), "accept", assetId, () => records.revise(assetId, current.version, { ...current, ...content }));
   }

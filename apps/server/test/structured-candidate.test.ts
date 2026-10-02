@@ -15,7 +15,7 @@ import { createAssetMcpServer } from "../src/mcp/tools.js";
 import { KnowledgeService } from "../src/knowledge/service.js";
 import { AssetSearchService } from "../src/asset/search.js";
 
-const memory = { capabilityIds: [], type: "MEMORY", title: "事务判断", summary: "在隔离仓库内先核对基线再准备候选", conclusion: "候选准备必须核对正式基线与当前内容，只有保持身份和范围一致时才允许修订。", conditions: "本地隔离仓库，正式内容已确认", verified: "临时目录中检查候选与正式文件", reasons: "保留基线能够明确修订对象，避免把不同历史内容误认为同一次判断。" };
+const memory = { capabilityIds: [], type: "MEMORY", title: "事务判断", summary: "在隔离仓库内先核对基线再准备候选", retrievalTerms: content().retrievalTerms, conclusion: "候选准备必须核对正式基线与当前内容，只有保持身份和范围一致时才允许修订。", conditions: "本地隔离仓库，正式内容已确认", verified: "临时目录中检查候选与正式文件", reasons: "保留基线能够明确修订对象，避免把不同历史内容误认为同一次判断。" };
 async function fixture() {
   const f = await candidateFixture();
   const repository = new KnowledgeRepository(f.options.databasePath);
@@ -136,7 +136,7 @@ test("concurrent prepares review the committed candidate; receipt retries do not
     const written = results[writtenIndex]!;
     assert.ok(!("status" in written));
     assert.equal((await f.service.pendingCandidates()).length, 1);
-    await f.service.rewrite(selection(written, "concurrent-change"), { title: memory.title, summary: memory.summary, bodyMarkdown: memory.conclusion + "\n外部改动" });
+    await f.service.rewrite(selection(written, "concurrent-change"), { title: memory.title, summary: memory.summary, retrievalTerms: memory.retrievalTerms, bodyMarkdown: memory.conclusion + "\n外部改动" });
     assert.deepEqual(await prepareWithReview(inputs[writtenIndex], f.service, f.capabilities), written);
     const review = await prepareWithReview(memory, f.service, f.capabilities);
     assert.ok("pendingCandidates" in review);
@@ -150,9 +150,9 @@ test("changed candidates reject stale versions, while complete review permits in
   const f = await fixture();
   try {
     const created = await prepareStructuredCandidate(memory, f.service, f.capabilities);
-    await f.service.rewrite(selection(created, "change"), { title: memory.title, summary: memory.summary, bodyMarkdown: memory.conclusion });
+    await f.service.rewrite(selection(created, "change"), { title: memory.title, summary: memory.summary, retrievalTerms: memory.retrievalTerms, bodyMarkdown: memory.conclusion });
     await assert.rejects(updateStructuredCandidate({ capabilityIds: [], candidateId: created.candidateId, candidateVersion: created.version,
-      title: memory.title, summary: memory.summary, bodyMarkdown: memory.conclusion }, f.service, f.capabilities), { code: "VERSION_CONFLICT" });
+      title: memory.title, summary: memory.summary, retrievalTerms: memory.retrievalTerms, bodyMarkdown: memory.conclusion }, f.service, f.capabilities), { code: "VERSION_CONFLICT" });
     const incomplete = await prepareWithReview(memory, f.service, f.capabilities);
     assert.ok("pendingCandidates" in incomplete);
     assert.equal(incomplete.pendingCandidates[0]!.candidateVersion, 1);
@@ -176,7 +176,7 @@ test("update preserves identity, type, scope and revision baseline, moves deferr
         await f.service.defer({ ...selection(revision, `defer-${type}-${scope}`), deferred: true });
         const before = (await f.service.pendingCandidates()).find(item => item.record.candidateId === revision.candidateId)!;
         const input = { capabilityIds: scope === "GLOBAL" ? [] : [f.alpha], candidateId: revision.candidateId, candidateVersion: revision.version,
-          title: "原有判断与补充", summary: memory.summary, bodyMarkdown: `${before.record.bodyMarkdown}\n\n补充：写入后仍须核对待审状态与原有身份，确认之前不能替代正式知识。`, requestId: `update-${type}-${scope}` };
+          title: "原有判断与补充", summary: memory.summary, retrievalTerms: memory.retrievalTerms, bodyMarkdown: `${before.record.bodyMarkdown}\n\n补充：写入后仍须核对待审状态与原有身份，确认之前不能替代正式知识。`, requestId: `update-${type}-${scope}` };
         const result = await updateStructuredCandidate(input, f.service, f.capabilities);
         assert.equal(result.changed, true); assert.equal(result.assetId, original.assetId); assert.equal(result.candidateId, revision.candidateId);
         assert.equal("path" in result, false);
@@ -202,7 +202,7 @@ test("update rejects invalid input and accepts a previously returned version out
     const workspace = await prepareStructuredCandidate({ ...memory, capabilityIds: [f.alpha] }, f.service, f.capabilities);
     for (const [candidate, capabilityIds, wrong] of [[global, [], [f.alpha]], [workspace, [f.alpha], []]] as const) {
       const input = { capabilityIds: [...capabilityIds], candidateId: candidate.candidateId, candidateVersion: candidate.version,
-        title: memory.title, summary: memory.summary, bodyMarkdown: memory.conclusion };
+        title: memory.title, summary: memory.summary, retrievalTerms: memory.retrievalTerms, bodyMarkdown: memory.conclusion };
       const before = (await f.candidate(candidate.candidateId)).bodyMarkdown;
       await assert.rejects(updateStructuredCandidate({ ...input, capabilityIds: [...wrong] }, f.service, f.capabilities), { code: "CAPABILITY_INVALID" });
       await assert.rejects(updateStructuredCandidate({ ...input, candidateVersion: 99 }, f.service, f.capabilities), { code: "VERSION_CONFLICT" });
@@ -220,7 +220,7 @@ test("update rejects invalid input and accepts a previously returned version out
     assert.ok(review.pendingCandidates.every(item => "bodyOmitted" in item && item.bodyOmitted === true));
     assert.ok(review.pendingCandidates.every(item => !("candidateVersion" in item)));
     const updated = await updateStructuredCandidate({ capabilityIds: [], candidateId: global.candidateId, candidateVersion: global.version,
-      title: memory.title, summary: memory.summary, bodyMarkdown: memory.conclusion }, f.service, f.capabilities);
+      title: memory.title, summary: memory.summary, retrievalTerms: memory.retrievalTerms, bodyMarkdown: memory.conclusion }, f.service, f.capabilities);
     assert.equal(updated.candidateId, global.candidateId);
   } finally { await f.close(); }
 });
@@ -232,11 +232,11 @@ test("all structured types render their own model chapters and evidence annotati
   const body = renderStructuredCandidate(parsed, [{ title: "正式标题", assetId: "ast1", relation: "补充" }], retained);
   for (const section of ["结论与适用条件", "理由与取舍", "依据与验证边界", "历史依据", "再次使用时的核验点", "相关知识", "本次变更说明"]) assert.ok(body.includes(`## ${section}`));
   for (const text of ["已验证：", "未验证：真实宿主未验证", "摘录；处理：脱敏", "材料：推断", "留存：2026-09-26T00:00:00.000Z，本次会话提交", "材料所述时间：2026-09", "正式标题（ast1）：补充", "修订自基线 0", "````text"]) assert.ok(body.includes(text), text);
-  const skill = candidatePrepareInputSchema.parse({ capabilityIds: [], type: "SKILL", title: "流程", summary: "摘要", trigger: "准备时", prerequisites: "临时库", steps: [memory.conclusion, "核验结果"], verification: "读回", stopConditions: "基线不同停止", recheckPoints: "版本" });
+  const skill = candidatePrepareInputSchema.parse({ capabilityIds: [], type: "SKILL", title: "流程", summary: "摘要", retrievalTerms: memory.retrievalTerms, trigger: "准备时", prerequisites: "临时库", steps: [memory.conclusion, "核验结果"], verification: "读回", stopConditions: "基线不同停止", recheckPoints: "版本" });
   const skillBody = renderStructuredCandidate(skill, [], retained);
   for (const section of ["触发", "输入与前置条件", "步骤", "验证", "停止条件", "再次使用时的核验点"]) assert.ok(skillBody.includes(`## ${section}`));
   assert.ok(skillBody.includes(`1. ${memory.conclusion}\n\n2. 核验结果`)); assert.doesNotMatch(skillBody, /历史依据|本次变更说明/);
-  const document = candidatePrepareInputSchema.parse({ capabilityIds: [], type: "DOCUMENT", title: "参考", summary: "摘要", purpose: memory.conclusion, coverage: "截至本次，只覆盖临时测试", bodyMarkdown: "## 自然章节\n\n资料" });
+  const document = candidatePrepareInputSchema.parse({ capabilityIds: [], type: "DOCUMENT", title: "参考", summary: "摘要", retrievalTerms: memory.retrievalTerms, purpose: memory.conclusion, coverage: "截至本次，只覆盖临时测试", bodyMarkdown: "## 自然章节\n\n资料" });
   assert.equal(renderStructuredCandidate(document, [], retained), `# 参考\n\n## 用途与范围\n\n${memory.conclusion}\n\n截至本次，只覆盖临时测试\n\n## 自然章节\n\n资料`);
 });
 
@@ -315,8 +315,8 @@ test("SKILL and DOCUMENT save complete candidates; cross-workspace and ineligibl
     const betaCapability = (await f.capabilities.issueFromTrustedHost(join(f.root, "beta"))).find(value => value.workspace === "beta")!.capabilityId;
     await assert.rejects(prepareStructuredCandidate({ ...memory, capabilityIds: [betaCapability], related: [{ assetId: beta.assetId, relation: "当前不合格" }] }, f.service, f.capabilities), { code: "RELATED_ASSET_INVALID" });
     for (const input of [
-      { capabilityIds: [], type: "SKILL", title: "流程", summary: "步骤摘要", trigger: "临时测试", steps: [memory.conclusion], verification: "读回检查" },
-      { capabilityIds: [f.alpha], type: "DOCUMENT", title: "资料", summary: "资料摘要", purpose: memory.conclusion, coverage: "仅临时测试，截至本次", bodyMarkdown: "## 自然章节\n\n资料正文" },
+      { capabilityIds: [], type: "SKILL", title: "流程", summary: "步骤摘要", retrievalTerms: memory.retrievalTerms, trigger: "临时测试", steps: [memory.conclusion], verification: "读回检查" },
+      { capabilityIds: [f.alpha], type: "DOCUMENT", title: "资料", summary: "资料摘要", retrievalTerms: memory.retrievalTerms, purpose: memory.conclusion, coverage: "仅临时测试，截至本次", bodyMarkdown: "## 自然章节\n\n资料正文" },
     ]) {
       const result = await prepareStructuredCandidate(input, f.service, f.capabilities);
       const row = await f.candidate(result.candidateId); const markdown = row.bodyMarkdown;
@@ -412,7 +412,7 @@ for (const notification of ["absent", "success", "throws"] as const) test(`MCP c
     assert.equal(reviewData.status, "REVIEW_REQUIRED"); assert.equal(reviewData.pendingCandidates.length, 1);
     assertNotifications(2);
     const item = reviewData.pendingCandidates[0]!;
-    const updateInput = { capabilityIds: [], candidateId: item.candidateId, candidateVersion: item.candidateVersion, title: memory.title, summary: memory.summary,
+    const updateInput = { capabilityIds: [], candidateId: item.candidateId, candidateVersion: item.candidateVersion, title: memory.title, summary: memory.summary, retrievalTerms: memory.retrievalTerms,
       bodyMarkdown: item.bodyMarkdown + "\n\n补充：此项协议行为已经通过隔离测试验证，真实会话仍须人工核实。", requestId: "mcp-update" };
     const updated = await client.callTool({ name: "candidate_update", arguments: updateInput });
     assert.notEqual(updated.isError, true); assert.match(JSON.stringify(updated), /已回到待审/);

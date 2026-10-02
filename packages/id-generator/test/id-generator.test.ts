@@ -19,6 +19,11 @@ test("generates and validates all prefixed decimal ID formats", () => {
   assert.equal(generator.validate("other123"), false);
   assert.equal(generator.validate(generator.next("cnd"), "cnd"), true);
   assert.equal(generator.validate("cnd_123"), false);
+  for (const prefix of ["isu", "chk"] as const) {
+    assert.equal(generator.validate(`${prefix}123`, prefix), true);
+    assert.equal(generator.validate(`${prefix}_123`, prefix), false);
+    assert.equal(generator.validate(`${prefix}123`, "ast"), false);
+  }
   assert.equal(generator.validate(generator.next("ast"), "tsk"), false);
 });
 

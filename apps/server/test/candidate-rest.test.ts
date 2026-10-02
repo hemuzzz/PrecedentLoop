@@ -17,6 +17,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { IssueService } from "../src/asset/issue-service.js";
+import type { IssueCard } from "../src/asset/issue-repository.js";
 
 const authority = "127.0.0.1:3199";
 async function fixture() {
@@ -52,7 +54,9 @@ test("finite REST writes require same origin, current token, JSON and exact fiel
     try { const before = db.prepare("SELECT count(*) AS n FROM write_operation").get(); await f.get("/api/inbox"); await f.get("/api/inbox?bucket=DEFERRED"); assert.deepEqual(db.prepare("SELECT count(*) AS n FROM write_operation").get(), before); }
     finally { db.close(); }
     assert.equal((await f.post("/api/inbox/accept", input)).status, 200);
-    assert.equal((await f.get(`/api/assets/${item.assetId}`)).status, 200);
+    const detail = await f.get(`/api/assets/${item.assetId}`);
+    assert.equal(detail.status, 200);
+    assert.deepEqual((await detail.json() as { data: { asset: { retrievalTerms: string[] } } }).data.asset.retrievalTerms, content().retrievalTerms);
     assert.equal((await f.post("/api/inbox/accept", input)).status, 200);
     const query = await (await f.get("/api/inbox/operation?requestId=accept")).json() as { data: { operation: { state: string } } };
     assert.equal(query.data.operation.state, "SUCCEEDED");
@@ -95,9 +99,10 @@ test("REST acceptance, revision, search and graph share query-layer formal numbe
   const f = await fixture();
   try {
     const pending = (await f.prepare("number-prepare", [content()])).candidates[0]!;
-    const inbox = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ candidateId: string; knowledgeNumber: number | null }> } };
+    const inbox = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ candidateId: string; knowledgeNumber: number | null; retrievalTerms: string[] }> } };
     assert.equal(inbox.data.items[0]?.candidateId, pending.candidateId);
     assert.equal(inbox.data.items[0]?.knowledgeNumber, null);
+    assert.deepEqual(inbox.data.items[0]?.retrievalTerms, content().retrievalTerms);
     const graphPending = await (await f.get("/api/overview")).json() as { data: { scopes: Array<{ items: Array<{ candidateId: string | null; knowledgeNumber: number | null }> }> } };
     assert.equal(graphPending.data.scopes.flatMap(scope => scope.items)[0]?.candidateId, pending.candidateId);
     assert.equal((await f.post("/api/inbox/accept", selection(pending, "number-accept"))).status, 200);
@@ -105,7 +110,7 @@ test("REST acceptance, revision, search and graph share query-layer formal numbe
     assert.equal(before.data.asset.knowledgeNumber, 1);
     const status = await (await f.get("/api/system/status")).json() as { data: { diagnostics: Array<{ code: string }>; mcpEndpoint: { ready: boolean } } };
     assert.ok(!status.data.diagnostics.some(item => item.code.includes("MIGRATION")));
-    assert.equal(f.repository.db.pragma("user_version", { simple: true }), 2);
+    assert.equal(f.repository.db.pragma("user_version", { simple: true }), 0);
     for (const path of ["/api/assets", `/api/assets?query=${encodeURIComponent("候选知识")}`]) {
       const response = await (await f.get(path)).json() as { data: { items: Array<{ knowledgeNumber: number | null }> } };
       assert.equal(response.data.items[0]?.knowledgeNumber, 1);
@@ -180,6 +185,95 @@ test("AI test is a protected write route with a fixed payload and never records 
     assert.equal((await f.get("/api/inbox/ai-settings")).status, 200);
     const providers = await (await f.get("/api/inbox/providers")).json() as { data: { providers: Array<{ isDefault: boolean }> } };
     assert.equal(providers.data.providers[0]!.isDefault, true);
+  } finally { await f.cleanup(); }
+});
+
+test("issue REST groups cards, counts them in overview/status and protects dismiss/draft/backfill writes", async () => {
+  const f = await fixture();
+  try {
+    const pending = (await f.prepare("issue-asset", [content()])).candidates[0]!;
+    await f.service.accept(selection(pending, "issue-accept"));
+    new IssueService(f.options.databasePath).record({ sessionId: "rest", turnId: "turn", knowledgeIssues: [{ assetId: pending.assetId, kind: "INCOMPLETE", detail: "需要补充条件" }] }, "CODEX");
+    const inbox = await (await f.get("/api/inbox")).json() as { data: { items: unknown[]; issueCards: IssueCard[] } };
+    assert.equal(inbox.data.items.length, 0); assert.equal(inbox.data.issueCards.length, 1);
+    const count = async () => {
+      const overview = await (await f.get("/api/overview")).json() as { data: { scopes: Array<{ inboxCount: number }> } };
+      const status = await (await f.get("/api/system/status")).json() as { data: { storage: { inboxAssetCount: number } } };
+      assert.equal(status.data.storage.inboxAssetCount, overview.data.scopes.reduce((n, scope) => n + scope.inboxCount, 0));
+      return status.data.storage.inboxAssetCount;
+    };
+    assert.equal(await count(), 1);
+    const revision = (await f.prepare("issue-revision", [{ ...content(), existingAssetId: pending.assetId, baseVersion: 0 }])).candidates[0]!;
+    assert.equal(await count(), 1);
+    const attached = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ issues: unknown[] }>; issueCards: unknown[] } };
+    assert.equal(attached.data.items[0]!.issues.length, 1); assert.equal(attached.data.issueCards.length, 0);
+    for (const route of ["dismiss-issue", "draft-revision", "backfill-terms", "retrieval-check"]) {
+      for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
+        assert.equal((await f.post(`/api/inbox/${route}`, {}, headers)).status, 403);
+    }
+    assert.equal((await f.post("/api/inbox/draft-revision", { requestId: "draft", assetId: pending.assetId })).status, 400);
+    assert.equal((await f.post("/api/inbox/draft-revision", { requestId: "draft", assetId: pending.assetId, provider: "codex", extra: true })).status, 400);
+    const input = { issueId: inbox.data.issueCards[0]!.issues[0]!.issueId };
+    assert.equal((await f.post("/api/inbox/dismiss-issue", { ...input, status: "RESOLVED" })).status, 400);
+    assert.equal((await f.post("/api/inbox/dismiss-issue", input)).status, 200);
+    assert.equal((await f.post("/api/inbox/dismiss-issue", input)).status, 409);
+    await f.service.reject(selection(revision, "issue-reject"));
+    assert.equal(await count(), 0);
+    assert.equal((await f.post("/api/inbox/draft-revision", { requestId: "draft-empty", assetId: pending.assetId, provider: "codex" })).status, 200);
+    let operation: { state: string; error?: { code: string } } | undefined;
+    for (let i = 0; i < 100; i++) {
+      const result = await (await f.get("/api/inbox/operation?requestId=draft-empty")).json() as { data: { operation: typeof operation } };
+      operation = result.data.operation; if (operation?.state !== "RUNNING") break; await delay(10);
+    }
+    assert.equal(operation?.state, "FAILED"); assert.equal(operation.error?.code, "VERSION_CONFLICT");
+  } finally { await f.cleanup(); }
+});
+
+test("terms backfill requires a write token, strict provider input and returns progress through the shared status route", async () => {
+  const f = await fixture();
+  try {
+    const input = { requestId: "terms-rest", provider: "codex" };
+    for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
+      assert.equal((await f.post("/api/inbox/backfill-terms", input, headers)).status, 403);
+    assert.equal((await f.post("/api/inbox/backfill-terms", { ...input, assetId: "ast1" })).status, 400);
+    assert.equal((await f.post("/api/inbox/backfill-terms", { requestId: "terms-rest" })).status, 400);
+    assert.equal((await f.post("/api/inbox/backfill-terms", { ...input, provider: "other" })).status, 400);
+    assert.equal((await f.post("/api/inbox/backfill-terms", input)).status, 200);
+    let operation: { state: string; result: unknown } | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const response = await (await f.get("/api/inbox/operation?requestId=terms-rest")).json() as { data: { operation: typeof operation } };
+      operation = response.data.operation;
+      if (operation?.state !== "RUNNING") break;
+      await delay(10);
+    }
+    assert.equal(operation?.state, "SUCCEEDED");
+    assert.deepEqual(operation?.result, { total: 0, processed: 0, written: 0, items: [] });
+    assert.equal(await f.service.receipt("terms-rest"), undefined);
+  } finally { await f.cleanup(); }
+});
+
+test("retrieval check REST requires token and strict target/provider input, reports status and pending count", async () => {
+  const f = await fixture();
+  try {
+    const input = { requestId: "check-rest", provider: "codex" };
+    for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
+      assert.equal((await f.post("/api/inbox/retrieval-check", input, headers)).status, 403);
+    for (const extra of [{ provider: "other" }, { target: { kind: "ASSET", id: "cnd1" } }, { target: { kind: "CANDIDATE", id: "ast1" } }, { extra: true }])
+      assert.equal((await f.post("/api/inbox/retrieval-check", { ...input, ...extra })).status, 400);
+    assert.equal((await f.post("/api/inbox/retrieval-check?extra=true", input)).status, 400);
+    assert.equal((await f.post("/api/inbox/retrieval-check", { requestId: "missing-provider" })).status, 400);
+    assert.equal((await f.post("/api/inbox/retrieval-check", input)).status, 200);
+    let operation: { state: string; result: unknown } | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      operation = ((await (await f.get("/api/inbox/operation?requestId=check-rest")).json()) as { data: { operation: typeof operation } }).data.operation;
+      if (operation?.state !== "RUNNING") break;
+      await delay(10);
+    }
+    assert.equal(operation?.state, "SUCCEEDED"); assert.deepEqual(operation?.result, { done: 0, total: 0, items: [] });
+    assert.equal(await f.service.receipt(input.requestId), undefined);
+    await f.prepare("pending-check", [content()]);
+    const inbox = (await (await f.get("/api/inbox")).json()) as { data: { pendingRetrievalCheckCount: number; items: Array<{ retrievalCheck: unknown }> } };
+    assert.equal(inbox.data.pendingRetrievalCheckCount, 1); assert.equal(inbox.data.items[0]!.retrievalCheck, null);
   } finally { await f.cleanup(); }
 });
 

@@ -5,6 +5,7 @@ import { CandidateService, requestIdSchema } from "../asset/candidate-service.js
 import { RepositoryOperationError } from "../asset/errors.js";
 import { WorkspaceConfigError } from "../workspace/config.js";
 import { AiService } from "../ai/service.js";
+import { IssueService } from "../asset/issue-service.js";
 
 import {
   AssetLibraryInputError,
@@ -44,7 +45,7 @@ export interface RestApiDependencies {
 export function createRestApiApp(dependencies: RestApiDependencies): Hono {
   const app = new Hono();
   const writeToken = randomBytes(32).toString("hex");
-  const writeRoutes = new Set(["/api/assets/delete", "/api/inbox/accept", "/api/inbox/defer", "/api/inbox/reject", "/api/inbox/import", "/api/inbox/rewrite", "/api/inbox/workspaces", "/api/inbox/test"]);
+  const writeRoutes = new Set(["/api/assets/delete", "/api/inbox/accept", "/api/inbox/defer", "/api/inbox/reject", "/api/inbox/import", "/api/inbox/rewrite", "/api/inbox/backfill-terms", "/api/inbox/retrieval-check", "/api/inbox/dismiss-issue", "/api/inbox/draft-revision", "/api/inbox/workspaces", "/api/inbox/test"]);
 
   app.use("/api/*", async (context, next) => {
     if (!requestIsAllowed(context, dependencies.allowedAuthority)) {
@@ -122,6 +123,27 @@ export function createRestApiApp(dependencies: RestApiDependencies): Hono {
     parseStrictQuery(context, [], z.object({}).strict());
     if (!dependencies.aiService) throw unavailable();
     return success(context, { operation: await dependencies.aiService[action](await readJson(context, action === "import" ? null : undefined)) });
+  });
+  app.post("/api/inbox/retrieval-check", async context => {
+    parseStrictQuery(context, [], z.object({}).strict());
+    if (!dependencies.aiService) throw unavailable();
+    return success(context, { operation: await dependencies.aiService.retrievalCheck(await readJson(context)) });
+  });
+  app.post("/api/inbox/backfill-terms", async context => {
+    parseStrictQuery(context, [], z.object({}).strict());
+    if (!dependencies.aiService) throw unavailable();
+    return success(context, { operation: await dependencies.aiService.backfillTerms(await readJson(context)) });
+  });
+
+  app.post("/api/inbox/dismiss-issue", async context => {
+    parseStrictQuery(context, [], z.object({}).strict());
+    if (!dependencies.candidateService) throw unavailable();
+    return success(context, new IssueService(dependencies.candidateService.options.databasePath).dismiss(await readJson(context)));
+  });
+  app.post("/api/inbox/draft-revision", async context => {
+    parseStrictQuery(context, [], z.object({}).strict());
+    if (!dependencies.aiService) throw unavailable();
+    return success(context, { operation: await dependencies.aiService.draftRevision(await readJson(context)) });
   });
 
   app.get("/api/overview", async (context) => {

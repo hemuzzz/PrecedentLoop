@@ -126,5 +126,13 @@ test("real CLI processes fail open, time out, and run with no knowledge service 
   assert.equal(result.code, 0);
   assert.deepEqual(JSON.parse(result.stdout), { recorded: true });
   assert.deepEqual(JSON.parse((await cli(JSON.stringify(stop))).stdout), {});
+  const large = JSON.stringify({ ...assessment, knowledgeIssues: Array.from({ length: 4 }, () => ({ assetId: "ast1", kind: "OUTDATED", detail: "中".repeat(500), evidence: "文".repeat(500) })) });
+  assert.ok(Buffer.byteLength(large) > 8192 && Buffer.byteLength(large) < 16384);
+  const failedIssues = await cli(large, true);
+  assert.equal(failedIssues.code, 0); assert.deepEqual(JSON.parse(failedIssues.stdout), { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } });
+  assert.equal((await cli(large + " ".repeat(16385 - Buffer.byteLength(large)), true)).code, 1);
+  const started = performance.now();
+  assert.equal((await cli(null, true)).code, 1);
+  assert.ok(performance.now() - started >= 3000 && performance.now() - started < 4500);
   assert.equal((await readdir(root)).length, 1);
 });

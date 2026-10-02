@@ -292,7 +292,7 @@ function assetSource(options: AssetSourceOptions) { return options; }
 
 async function writeAsset(fixture: Awaited<ReturnType<typeof createFixture>>, source: AssetSourceOptions): Promise<void> {
   const content = { assetId: source.id, type: source.type, scope: source.scope, workspace: source.workspace ?? null,
-    title: source.title ?? `${source.type} title`, summary: source.summary ?? `${source.type} summary`, bodyMarkdown: source.body };
+    title: source.title ?? `${source.type} title`, summary: source.summary ?? `${source.type} summary`, retrievalTerms: [], bodyMarkdown: source.body };
   fixture.writes.write(idGenerator.next("tsk"), "accept", source.id, () => {
     const current = fixture.assets.get(source.id);
     return current ? fixture.assets.revise(source.id, current.version, content) : fixture.assets.insert(content);
