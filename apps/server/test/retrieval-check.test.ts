@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { candidateFixture } from "../test-support/candidate-fixture.js";
@@ -224,6 +224,28 @@ test("reference extraction checks current sections and known extensions, consume
   assert.deepEqual(extractReferencePaths("DOCUMENT", "now.ts\n## 历史依据\nold.ts\n### 子节\nolder.ts\n## 用法\nnext.ts"), ["now.ts", "next.ts"]);
   assert.deepEqual(extractReferencePaths("SKILL", "old.ts"), []);
   assert.deepEqual(extractReferencePaths("DOCUMENT", "../outside.ts ./local.ts"), ["../outside.ts", "local.ts"]);
+});
+
+for (const git of [false, true]) test(`reference matching ${git ? "Git" : "directory traversal"}: exact paths, segment boundaries and leading dot`, async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const cases = [
+    { reference: "model.ts", file: "xmodel.ts", broken: ["model.ts"] },
+    { reference: "knowledge/model.ts", file: "foo-knowledge/model.ts", broken: ["knowledge/model.ts"] },
+    { reference: "knowledge/model.ts", file: "apps/server/src/knowledge/model.ts", broken: [] },
+    { reference: "knowledge/model.ts", file: "knowledge/model.ts", broken: [] },
+    { reference: "./x.ts", file: "x.ts", broken: [] },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const root = join(f.root, `workspace-${index}`), file = join(root, entry.file);
+    await mkdir(dirname(file), { recursive: true }); await writeFile(file, "");
+    if (git) {
+      execFileSync("git", ["init", "-q", root]);
+      execFileSync("git", ["-C", root, "add", entry.file]);
+    }
+    const checker = new ReferenceChecker({ schemaVersion: 1, workspaces: [{ name: "alpha", paths: [root], aliases: [], description: "test" }] });
+    assert.deepEqual(await checker.broken({ type: "MEMORY", scope: "WORKSPACE", workspace: "alpha",
+      bodyMarkdown: `## 结论与适用条件\n${entry.reference}` }), entry.broken, `${entry.reference} against ${entry.file}`);
+  }
 });
 
 for (const git of [false, true]) test(`reference inventory ${git ? "Git tracked/untracked" : "directory traversal"}: suffixes, exclusions, caching, missing paths and issue dedup`, async t => {

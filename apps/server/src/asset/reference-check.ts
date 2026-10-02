@@ -47,7 +47,7 @@ export class ReferenceChecker {
       this.files.set(workspace.name, cached);
     }
     const files = await cached;
-    return files === null ? [] : paths.filter(path => !files.some(file => file.endsWith(path)));
+    return files === null ? [] : paths.filter(path => !files.some(file => file === path || file.endsWith(`/${path}`)));
   }
 }
 
