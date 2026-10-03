@@ -87,7 +87,7 @@ function openInboxDetail(item: InboxItem) {
   inboxDetailOpen.value = true;
 }
 function candidateLocked(item: InboxItem): boolean {
-  return !inboxManaged.value || !!candidateManager.value?.writing || !!candidateManager.value?.isRewriting(item.candidateId);
+  return !!candidateManager.value?.writing || !!candidateManager.value?.isRewriting(item.candidateId);
 }
 // Card actions select the card first so progress and results show on it.
 function cardAct(action: "accept" | "defer" | "reject", item: InboxItem) {
@@ -148,7 +148,6 @@ const inboxItems = ref<InboxItem[]>([]);
 const issueCards = ref<IssueCard[]>([]);
 let preservingInboxDetails = false;
 const candidateManager = ref<InstanceType<typeof CandidateManager>>();
-const inboxManaged = ref(false);
 const inboxBucket = ref<"PENDING" | "DEFERRED" | "ALL">("PENDING");
 const inboxType = ref<"" | AssetType>("");
 const inboxWorkspace = ref<string | null>("");
@@ -452,7 +451,6 @@ async function loadInbox({ preserveDetails = false }: { preserveDetails?: boolea
     inboxItems.value = result.items;
     issueCards.value = result.issueCards ?? [];
     emit("inboxChanged");
-    inboxManaged.value = result.managed === true;
     if (preserveDetails) {
       if (selectedInboxItem.value) selectedInboxItem.value = result.items.find(item => item.assetId === selectedInboxItem.value?.assetId) ?? selectedInboxItem.value;
       await nextTick();
@@ -687,7 +685,7 @@ function presentError(
 
     <!-- 知识候选：卡片列表，全文在对话框中查看（2026-09-25 改版） -->
     <template v-else>
-      <CandidateManager ref="candidateManager" :workspaces="workspaceSuggestions" :managed="inboxManaged" :selected="selectedInboxItem" @refresh="loadInbox(); loadWorkspaces()">
+      <CandidateManager ref="candidateManager" :workspaces="workspaceSuggestions" :selected="selectedInboxItem" @refresh="loadInbox(); loadWorkspaces()">
         <template #filters>
           <div class="asset-filter-bar inbox-toolbar" aria-label="知识候选筛选">
             <label class="asset-filter-field"><span>类型</span><select v-model="inboxType"><option value="">全部类型</option><option value="MEMORY">记忆</option><option value="DOCUMENT">文档</option><option value="SKILL">技能</option></select></label>
@@ -718,8 +716,8 @@ function presentError(
           <article v-for="card in filteredIssueCards" :key="`issues-${card.assetId}`" class="candidate-card">
             <div class="candidate-card-head"><span class="pill">待修订问题</span><span class="pill">{{ card.workspace ?? '全局' }}</span><span class="candidate-note">当前版本 {{ card.version }}</span></div>
             <h3>{{ card.title }}</h3>
-            <IssueList :issues="card.issues" dismissible :disabled="candidateManager?.writing" @dismiss="candidateManager?.dismissIssue($event)" />
-            <button type="button" class="primary-button" :disabled="!inboxManaged || candidateManager?.busy" @click="candidateManager?.draftRevision(card)">起草修订</button>
+            <IssueList :issues="card.issues" dismissible :disabled="!!candidateManager?.writing" @dismiss="candidateManager?.dismissIssue($event)" />
+            <button type="button" class="primary-button" :disabled="candidateManager?.busy" @click="candidateManager?.draftRevision(card)">起草修订</button>
           </article>
           <article v-for="item in inboxPageItems" :key="item.assetId" class="candidate-card" :class="{ selected: selectedInboxItem?.assetId === item.assetId }" @click="openInbox(item)">
             <div class="candidate-card-head">
@@ -738,8 +736,8 @@ function presentError(
             <section v-if="item.issues?.length" @click.stop>
               <h4>接受后将关闭的问题</h4>
               <p class="candidate-summary">包含起草之后报告的问题，请确认修订是否已处理。</p>
-              <IssueList :issues="item.issues" dismissible :disabled="candidateManager?.writing" @dismiss="candidateManager?.dismissIssue($event)" />
-              <button v-if="item.issues.some(issue => issue.status === 'OPEN')" type="button" class="secondary-button" :disabled="!inboxManaged || candidateManager?.busy" @click="openInbox(item); candidateManager?.draftRevision(item)">起草修订</button>
+              <IssueList :issues="item.issues" dismissible :disabled="!!candidateManager?.writing" @dismiss="candidateManager?.dismissIssue($event)" />
+              <button v-if="item.issues.some(issue => issue.status === 'OPEN')" type="button" class="secondary-button" :disabled="candidateManager?.busy" @click="openInbox(item); candidateManager?.draftRevision(item)">起草修订</button>
             </section>
             <div v-if="selectedInboxItem?.assetId === item.assetId && candidateManager?.selectedFeedback?.text" class="candidate-feedback" :class="candidateManager.selectedFeedback.tone" :role="candidateManager.selectedFeedback.tone === 'error' ? 'alert' : 'status'">
               <UiIcon :name="candidateManager.selectedFeedback.tone === 'success' ? 'check' : candidateManager.selectedFeedback.tone === 'error' ? 'warning' : 'info'" />
@@ -751,7 +749,7 @@ function presentError(
               <template v-if="item.candidateId">
                 <button type="button" class="primary-button" :disabled="candidateLocked(item)" @click="cardAct('accept', item)">接受</button>
                 <button type="button" class="secondary-button" :disabled="candidateLocked(item)" @click="cardAct('defer', item)">{{ item.status === 'DEFERRED' ? '恢复待处理' : '暂存' }}</button>
-                <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(item.candidateId)" :disabled="!inboxManaged || candidateManager?.busy" @click="cardRewrite(item)"><UiIcon name="sparkles" />AI 改稿</button>
+                <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(item.candidateId)" :disabled="candidateManager?.busy" @click="cardRewrite(item)"><UiIcon name="sparkles" />AI 改稿</button>
               </template>
               <span class="candidate-spacer"></span>
               <button type="button" class="quiet-button candidate-link" @click="openInboxDetail(item)">查看全文</button>
@@ -820,7 +818,7 @@ function presentError(
                   <template v-if="selectedInboxItem.candidateId">
                     <button type="button" class="primary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('accept', selectedInboxItem)"><UiIcon name="tick" />接受</button>
                     <button type="button" class="secondary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('defer', selectedInboxItem)"><UiIcon name="folder" />{{ selectedInboxItem.status === 'DEFERRED' ? '恢复待处理' : '暂存' }}</button>
-                    <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(selectedInboxItem.candidateId)" :disabled="!inboxManaged || candidateManager?.busy" @click="candidateManager?.open('rewrite', selectedInboxItem)"><span v-if="candidateManager?.isRewriting(selectedInboxItem.candidateId)" class="candidate-spinner" aria-hidden="true"></span><UiIcon v-else name="sparkles" />{{ candidateManager?.isRewriting(selectedInboxItem.candidateId) ? 'AI 修改中…' : 'AI 改稿' }}</button>
+                    <button type="button" class="secondary-button" :aria-busy="candidateManager?.isRewriting(selectedInboxItem.candidateId)" :disabled="candidateManager?.busy" @click="candidateManager?.open('rewrite', selectedInboxItem)"><span v-if="candidateManager?.isRewriting(selectedInboxItem.candidateId)" class="candidate-spinner" aria-hidden="true"></span><UiIcon v-else name="sparkles" />{{ candidateManager?.isRewriting(selectedInboxItem.candidateId) ? 'AI 修改中…' : 'AI 改稿' }}</button>
                     <button type="button" class="secondary-button" :disabled="candidateLocked(selectedInboxItem)" @click="candidateManager?.act('reject', selectedInboxItem)"><UiIcon name="ban" />拒绝</button>
                   </template>
                 </div>

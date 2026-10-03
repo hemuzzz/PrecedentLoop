@@ -7,7 +7,7 @@ import ImportKnowledgeForm from "./ImportKnowledgeForm.vue";
 import FilterMenu from "./FilterMenu.vue";
 import UiIcon from "./UiIcon.vue";
 
-const props = defineProps<{ workspaces: string[]; managed: boolean; selected?: InboxItem | undefined }>();
+const props = defineProps<{ workspaces: string[]; selected?: InboxItem | undefined }>();
 const emit = defineEmits<{ refresh: [] }>();
 const api = new HubApiClient();
 const operation = ref<AiOperation | null>(null);
@@ -240,11 +240,11 @@ defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryRes
     <div class="candidate-toolbar">
       <slot name="filters" />
       <div class="candidate-import-action">
-        <button type="button" class="primary-button candidate-import-button" :aria-busy="importRunning" :disabled="busy || !managed" @click="open('import')">
+        <button type="button" class="primary-button candidate-import-button" :aria-busy="importRunning" :disabled="busy" @click="open('import')">
           <span v-if="importRunning" class="spinner" aria-hidden="true"></span><UiIcon v-else name="file-upload" />{{ importRunning ? 'AI 整理中…' : '导入外部知识' }}
         </button>
         <FilterMenu ref="importMenu" class="candidate-import-menu" label="导入选项" icon="chevron">
-          <button type="button" class="candidate-import-option" :disabled="busy || !managed" @click="open('import')">
+          <button type="button" class="candidate-import-option" :disabled="busy" @click="open('import')">
             <UiIcon name="document" />
             <span><strong>导入 Markdown</strong><small>支持 .md、.markdown 和 .mdx 文件</small></span>
           </button>
@@ -252,12 +252,9 @@ defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryRes
       </div>
       <slot name="search" />
     </div>
-    <div v-if="!managed || (!feedback.candidateId && feedback.text)" class="candidate-operation-bar">
-      <span v-if="!managed" class="muted">候选存储尚未迁移，当前仅可浏览。</span>
-      <template v-else>
-        <span :role="feedback.tone === 'error' ? 'alert' : 'status'" :class="{ 'field-error': feedback.tone === 'error' }">{{ feedback.text }}</span>
-        <button v-if="feedback.canQuery" type="button" class="quiet-button" @click="queryResult">查询结果</button>
-      </template>
+    <div v-if="!feedback.candidateId && feedback.text" class="candidate-operation-bar">
+      <span :role="feedback.tone === 'error' ? 'alert' : 'status'" :class="{ 'field-error': feedback.tone === 'error' }">{{ feedback.text }}</span>
+      <button v-if="feedback.canQuery" type="button" class="quiet-button" @click="queryResult">查询结果</button>
     </div>
     <details v-if="operation?.state === 'SUCCEEDED' && operation.operation === 'import' && (operation.result?.sourceResults?.length || operation.result?.warnings?.length)" class="result-details">
       <summary>查看整理说明</summary>
