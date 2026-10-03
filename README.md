@@ -1,3 +1,7 @@
+
+https://github.com/user-attachments/assets/4a7a85be-fd7f-4b86-819f-5b85abb3538c
+
+https://github.com/user-attachments/assets/01d46970-4e44-4b0c-9411-eda686b6ea12
 # Precedent Loop
 
 **Turn experience into precedent.**
@@ -11,6 +15,10 @@ Local, human-reviewed engineering memory for Codex and Claude Code.
 English · [简体中文](README.zh-CN.md)
 
 <!-- TODO: screenshot or short GIF of the Hub (knowledge list + candidate review). Suggested path: docs/images/hub.png -->
+
+
+https://github.com/user-attachments/assets/b9700805-b317-4676-b0c6-9cdd093ea33e
+
 
 ## Why
 
