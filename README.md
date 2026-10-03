@@ -10,11 +10,9 @@ Local, human-reviewed engineering memory for Codex and Claude Code.
 
 English · [简体中文](README.zh-CN.md)
 
-<!-- TODO: screenshot or short GIF of the Hub (knowledge list + candidate review). Suggested path: docs/images/hub.png -->
-
-
 https://github.com/user-attachments/assets/b9700805-b317-4676-b0c6-9cdd093ea33e
 
+<sub>83-second overview — Chinese narration with English subtitles.</sub>
 
 ## Why
 

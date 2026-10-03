@@ -10,7 +10,9 @@
 
 [English](README.md) · 简体中文
 
-<!-- TODO：Hub 截图或短 GIF（知识列表 + 候选审阅），建议路径 docs/images/hub.png -->
+https://github.com/user-attachments/assets/b9700805-b317-4676-b0c6-9cdd093ea33e
+
+<sub>83 秒产品介绍，中文旁白，中英双语字幕。</sub>
 
 ## 为什么需要它
 
