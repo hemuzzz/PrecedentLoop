@@ -44,7 +44,7 @@ pnpm --filter @precedent-loop/server init-database --offline
 pnpm --filter @precedent-loop/server dev
 ```
 
-All DDL lives in `apps/server/src/storage/schema.sql`. `schema.ts` reads that file, and the server build copies it to `dist/storage/schema.sql` alongside the compiled module. The database does not use `user_version`. When opening an existing database containing the `asset` table for writing, the server automatically adds missing tables, columns, indexes and full-text index structure, rebuilding the derived full-text index when needed. This preserves existing data and does not change existing columns or constraints. Read-only connections check required tables without adding structure. Empty databases still require explicit `init-database --offline`; startup and app updates do not initialize them. The initialization command creates the database only; desktop recognition also requires the marker created by Setup and a valid SQLite header with a positive schema cookie (the schema change counter), as described in [Configuration](configuration.md#data-folder).
+All DDL lives in `apps/server/src/storage/schema.sql`. `schema.ts` reads that file, and the server build copies it to `dist/storage/schema.sql` alongside the compiled module. A writable connection to an existing database adds missing tables, columns, indexes and full-text index structure without changing existing data, columns or constraints. Empty databases must be initialized explicitly with `init-database --offline`. The command creates the database only; the desktop app also needs the marker that Setup writes, as described in [Configuration](configuration.md#data-folder).
 
 In a second terminal, start the Hub. Vite proxies `/api` to the server port:
 
@@ -90,9 +90,12 @@ Smoke tests that exercise built artifacts live in each package's `package.json` 
 
 ```bash
 cp apps/desktop/build-config.example.json .desktop-local.json   # an empty {} is enough
+rm -rf apps/server/dist
 pnpm build
 pnpm --filter @precedent-loop/desktop package:mac
 ```
+
+The server build (`tsc`) does not empty `apps/server/dist`, so remove it first; otherwise output from deleted source files is packaged too. The Hub build empties its own output.
 
 The app is written to `dist/desktop/<build id>/PrecedentLoop.app`. To check a built app against a temporary database and port:
 
@@ -100,14 +103,30 @@ The app is written to `dist/desktop/<build id>/PrecedentLoop.app`. To check a bu
 pnpm --filter @precedent-loop/desktop smoke:package '/absolute/path/to/PrecedentLoop.app'
 ```
 
+To replace the installed `/Applications/PrecedentLoop.app` with a fresh build (setup must be complete), run `pnpm --filter @precedent-loop/desktop update:mac`. It builds the app, quits the running one, swaps it in and waits for the new server to be ready.
+
 The bundled runtime is Electron's own Node (`ELECTRON_RUN_AS_NODE`), so the Electron version and the pinned Node version must stay in step. Packaging checks this and stops on a mismatch.
+
+## Releasing
+
+1. Set the new version in `apps/desktop/package.json`. It must be higher than the latest release, or the in-app updater will not offer it.
+2. On the merged commit, with `apps/server/dist` removed and `pnpm build` run, create the release files:
+
+   ```bash
+   pnpm --filter @precedent-loop/desktop release:mac
+   ```
+
+   This writes `PrecedentLoop-<version>-<arch>-local-install.dmg` (for people to download), plus `-update.dmg` and `<version>-<arch>.json` (for the in-app updater) to `dist/desktop/release-*/`. Pass `--manual-only` to mark a release that must not be installed automatically.
+3. Check the app inside with `smoke:package` and each DMG with `hdiutil verify`.
+4. Publish a non-draft, non-prerelease GitHub release tagged `v<version>` with all three files. The updater reads `releases/latest` and requires the file names to match the manifest.
 
 ## Code conventions
 
 - TypeScript in `strict` mode, ES modules, `.js` extensions in relative imports, explicit `import type`. Don't loosen compiler settings or use `any` to get around errors.
 - Validate input with the existing Zod schemas.
 - Generate and validate IDs only through `@precedent-loop/id-generator` (`ast`, `tsk`, `usg`, `cnd` prefixes followed by digits).
-- Put DDL in `storage/schema.sql`, query SQL in `storage/` or `*-repository.ts`, and use-case logic in services. HTTP, MCP and hook entry points validate input, call the shared service and map errors. See [Persistence rules](../工程约定/数据持久化约定.md).
+- Put DDL in `storage/schema.sql`, query SQL in `storage/` or `*-repository.ts`, and use-case logic in services. HTTP, MCP and hook entry points validate input, call the shared service and map errors.
+- Every table except the FTS index starts with an auto-increment `id` used for nothing else, has a separate unique business key, and carries `is_deleted`, `created_at` and `updated_at`. Reads filter `is_deleted = 0`; deletes are logical. No views or triggers.
 - SQLite holds the original knowledge and candidates. Content writes use short transactions, version checks and receipts; acceptance updates FTS in the same transaction. Knowledge deletion is logical, and all current-content reads filter deleted rows. There is no restore entry point.
 - Errors use the module's error type and `code`; each entry point maps them. Never return internal stack traces to clients.
 - The Hub talks to the server only through `apps/hub/src/api/client.ts` with the types in `api/types.ts`.

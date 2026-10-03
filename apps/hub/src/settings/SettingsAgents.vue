@@ -131,7 +131,7 @@ onBeforeUnmount(() => unsubscribe?.());
 
   <SettingsDialog :open="confirm?.kind === 'remove'" :title="confirm ? `移除 ${agentNames[confirm.agent]} 接入？` : ''" :busy="disabled" @close="confirm = null">
     <p>{{ confirm ? agentNames[confirm.agent] : '' }} 将不再使用你的知识库：</p>
-    <ul class="settings-dialog-list"><li>断开知识库连接</li><li>移除 3 个工作流程 Skills</li><li>停止项目识别与沉淀提醒</li></ul>
+    <ul class="settings-dialog-list"><li>断开知识库连接</li><li>停止项目识别与沉淀提醒</li></ul>
     <p class="setup-help">知识库、工作区和 {{ confirm ? agentNames[confirm.agent] : '' }} 本身都不受影响，你修改过的文件会保留。之后可随时重新接入。</p>
     <template #actions><button class="setup-button" autofocus @click="confirm = null">取消</button><button class="setup-button danger-fill" @click="confirmed">移除</button></template>
   </SettingsDialog>

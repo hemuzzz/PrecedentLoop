@@ -4,7 +4,7 @@ Most people configure everything in the desktop app. This page is for editing co
 
 ## Data folder
 
-SQLite is the sole source of truth for knowledge, candidates, previous content, display numbers, full-text search and operation records. The current database baseline is **2**.
+The SQLite database is the only original copy of knowledge, candidates, previous versions, display numbers, the full-text index and operation records.
 
 ```text
 <data folder>/
@@ -14,13 +14,13 @@ SQLite is the sole source of truth for knowledge, candidates, previous content, 
   logs/
 ```
 
-The desktop app requires a valid `.precedentloop.json` marker and a valid SQLite database header with a positive schema cookie (the 4-byte big-endian schema change counter at offset 40) to recognize an initialized data folder. It does not read `user_version` or load SQLite in the main process. A marker with a missing database or a schema cookie of 0 indicates incomplete initialization; a header shorter than 100 bytes or with an invalid SQLite magic string is unsupported. A nonempty folder without a marker is not recognized as product data.
+The desktop app recognizes an initialized data folder by two things: a valid `.precedentloop.json` marker, and a valid SQLite header in `runtime/precedent-loop.sqlite` with a positive schema cookie (the 4-byte big-endian schema change counter at offset 40). A marker with a missing database or a schema cookie of 0 means initialization is incomplete. A header shorter than 100 bytes or without the SQLite magic string is unsupported. A non-empty folder without a marker is not treated as Precedent Loop data.
 
-The server checks required tables and workspace configuration. When opening an existing database containing the `asset` table for writing, it automatically adds missing tables, columns, indexes and full-text index structure; the derived full-text index is rebuilt when needed. This preserves existing data and does not change existing columns or constraints. Read-only connections check required tables without adding structure. Empty databases still require explicit `init-database --offline` initialization; startup and app updates do not initialize them.
+Setup creates the marker and layout in a new or empty folder, then runs `init-database --offline` on the empty database. It can resume an incomplete initialization without overwriting existing data. Normal startup and app updates never initialize a database.
 
-Setup creates the marker and layout in a new or empty folder, then explicitly runs `init-database --offline` on an empty database. It can resume an incomplete initialization without overwriting existing data. Normal startup and app updates do not initialize or upgrade storage. The marker's `formatVersion`, app configuration versions and workspace `schemaVersion` remain separate from the database baseline.
+The server checks the required tables and the workspace configuration when it starts. A writable connection to an existing database that contains the `asset` table adds any missing tables, columns, indexes and full-text index structure, and rebuilds the full-text index when needed. It keeps existing data and never changes existing columns or constraints. Read-only connections only check that the required tables exist.
 
-Standalone server operation uses the database and workspace paths below; it does not require the desktop marker. See [Development](development.md#dev-mode) for initialization. Knowledge is stored as rows with Markdown bodies, so a knowledge repository directory is not required.
+A standalone server uses the database and workspace paths described under [Environment variables](#environment-variables) and does not need the marker. See [Development](development.md#dev-mode) for initialization.
 
 ## app-config.json
 
@@ -73,7 +73,7 @@ Location: `<data folder>/config/workspaces.json`. It lists the projects that hav
 
 Aliases and descriptions only help agents pick the right project; they do not change access. The app's **Projects (项目与授权)** page only adds new entries with a name and path; edit aliases and descriptions in this file. Changes are picked up without a restart.
 
-Removing a project or changing its paths invalidates the capability IDs agents were given for it.
+Renaming or removing a project, or changing its paths, invalidates the capability IDs agents were given for it.
 
 ## AI providers
 

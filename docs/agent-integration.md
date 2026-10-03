@@ -41,16 +41,18 @@ The MCP server is only available while the app is running (closing the window ke
 | Tool | Purpose | Key inputs and limits |
 |---|---|---|
 | `knowledge_recall` | Search knowledge in the chosen projects | `capabilityIds` (0–8 projects; `[]` = global only), `queries` (1–8 literal expressions). Returns at most 8 items and 5,000 characters in total. |
-| `asset_read` | Read the full text of a recalled item | `capabilityIds` plus a `recallItemId` from the recall. Content up to 256,000 bytes. |
+| `asset_read` | Read the full text of a precedent | `capabilityIds` plus a `recallItemId` from the recall, or an `assetId` with an optional `expectedVersion`. Returns the title, summary, retrieval terms, body and current `version`. |
 | `asset_mark_used` | Record that an item actually influenced the work | `capabilityIds` plus a `recallItemId` or `readRef`. Reading alone does not count as use. |
-| `candidate_prepare` | Propose a new precedent or a revision | One project, or `[]` for global, plus structured fields for the knowledge type. Writes to the inbox only. |
-| `candidate_update` | Revise a pending candidate on the same topic | The candidate's ID and hash plus the full revised title, summary and body. |
+| `candidate_prepare` | Propose a new precedent, or a revision with `revision: { assetId, baseVersion }` | One project, or `[]` for global, plus title, summary, 3–16 retrieval terms and the structured fields for the knowledge type. Writes a candidate only. |
+| `candidate_update` | Merge changes into an open candidate on the same topic | The candidate's ID and `candidateVersion` plus the full revised title, summary, retrieval terms and body. |
 
 How recall works:
 
-- Each query is matched as a literal, case-insensitive substring. Spaces and punctuation are kept; `a|b` or `AND`/`OR` are not treated as query syntax. Results from all queries are de-duplicated and ranked together.
-- Short memories that match well are returned inline; documents, skills and other matches are returned as references for `asset_read`.
-- Only approved knowledge in `assets/` is searchable. Candidates in the inbox are never recalled.
+- Each query is matched as a literal, case-insensitive substring. Spaces and punctuation are kept; `a|b` or `AND`/`OR` are not treated as query syntax. Results from all queries are de-duplicated and ranked together: matches in the title rank highest, then the summary or retrieval terms, then the body.
+- Every item comes back with its title and a `recallItemId` for `asset_read`. Memories that match strongly also include their summary when the budget allows.
+- Only approved knowledge is searchable. Candidates are never recalled.
+
+When an agent finds that a precedent it used is outdated, wrong, incomplete, misleading or hard to find, it reads the precedent and calls `candidate_prepare` with `revision`. If that precedent already has an open candidate, the call returns `REVISION_BLOCKED` with the blocking candidate's version and full content, and the agent merges its change with `candidate_update`.
 
 Candidates are never approved by the agent. They appear in the app's candidate page, which opens automatically when the app is running. See [Review workflow](review-workflow.md).
 
@@ -62,14 +64,14 @@ On every prompt, the project-recognition hook gives the agent the list of regist
 
 The agent chooses the relevant projects for each request and passes their capability IDs to the tools. Any registered project can be used from any working directory, so knowledge from one project is available while you work in another.
 
-Only you can register projects, from the app or by editing `workspaces.json`. Agents cannot add or widen access themselves. Capability IDs stay valid until the project is removed or its paths change.
+Only you can register projects, from the app or by editing `workspaces.json`. Agents cannot add or widen access themselves. Capability IDs stay valid until the project is renamed, removed or its paths change.
 
 ## Hooks
 
 All hooks run through a small launcher that the app installs at `~/.precedent/bin/precedent-hook`, which then runs the CLI bundled inside the app.
 
 - **`UserPromptSubmit`** (timeout 10 s) — injects the project list and usage guidance. It does not read or rewrite your prompt and does not run a recall by itself.
-- **`PostToolUse`** (matches `Bash` and `apply_patch`) — marks that the turn did real work. It only touches a small local cache.
+- **`PostToolUse`** (matches `Bash|apply_patch` for Codex and `Bash|Edit|Write|MultiEdit|NotebookEdit` for Claude Code) — marks that the turn did real work. It only touches a small local cache.
 - **`Stop`** — if the turn did work but the agent did not record whether there was anything worth keeping, it shows a reminder. It never blocks the agent from finishing.
 
 `PostToolUse` and `Stop` never access the knowledge database. Their timeouts are 1 s for Codex and 5 s for Claude Code, and the CLI gives up gracefully after 750 ms.
