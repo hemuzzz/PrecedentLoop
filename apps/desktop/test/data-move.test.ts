@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { appConfigSchema, readAppConfig, writeAppConfig, type AppConfig } from "../src/config.js";
+import { appConfigSchema, dataPaths, readAppConfig, writeAppConfig, type AppConfig } from "../src/config.js";
 import { SetupService, type SetupDependencies } from "../src/setup-service.js";
 import { createSetupDispatcher, settingsMethods, setupRequestSchemas } from "../src/setup-ipc.js";
 import type { StartupMode } from "../src/startup.js";
@@ -97,12 +97,13 @@ test("a copy failure keeps the original directory in use and restarts the origin
   } finally { await f.cleanup(); }
 });
 
-test("associate switches to an existing baseline-2 directory without copying; other kinds are refused", async () => {
+test("associate switches to an initialized directory without copying; other kinds are refused", async () => {
   const f = await fixture();
   try {
-    const unsupported = join(f.root, "old"); await fixtureProduct(unsupported, 5, true);
-    assert.match((await f.service.planDataMove("associate", unsupported)).reason ?? "", /存储版本 5/);
-    assert.match((await f.service.planDataMove("associate", join(f.root, "empty"))).reason ?? "", /基线版本 2/);
+    const unsupported = join(f.root, "invalid"); await fixtureProduct(unsupported);
+    await writeFile(dataPaths(unsupported).databasePath, "invalid SQLite header");
+    assert.match((await f.service.planDataMove("associate", unsupported)).reason ?? "", /SQLite 文件头无效/);
+    assert.match((await f.service.planDataMove("associate", join(f.root, "empty"))).reason ?? "", /已初始化/);
     const other = join(f.root, "other"); await fixtureProduct(other, 2, true);
     await mkdir(join(other, "repository/assets/global/memories"), { recursive: true });
     await writeFile(join(other, "repository/assets/global/memories/x.md"), "x"); await writeFile(join(other, "repository/assets/global/memories/y.md"), "y");

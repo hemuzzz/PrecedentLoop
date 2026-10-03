@@ -275,7 +275,7 @@ onBeforeUnmount(() => { unsubscribe?.(); unsubscribeIntegration?.(); });
                   <h2>使用已有知识库</h2><p class="setup-help">之前用过 Precedent Loop，选这个。不会复制、移动或覆盖任何文件。</p>
                   <template v-if="dataMode === 'existing'">
                     <div class="setup-path" @click.stop><UiIcon name="folder" /><code>{{ draft.dataDirectory }}</code><button class="setup-button" :disabled="busy" @click="chooseDirectory">选择…</button></div>
-                    <div v-if="checkedCurrent && inspection?.kind === 'PRODUCT'" class="setup-found"><strong>✓ 找到已有知识库</strong><span v-if="directory?.statistics?.workspaces !== undefined">工作区 <b>{{ directory.statistics.workspaces }}</b></span><span>存储版本 <b>{{ inspection.storageVersion }}</b></span></div>
+                    <div v-if="checkedCurrent && inspection?.kind === 'PRODUCT'" class="setup-found"><strong>✓ 找到已有知识库</strong><span v-if="directory?.statistics?.workspaces !== undefined">工作区 <b>{{ directory.statistics.workspaces }}</b></span></div>
                     <p v-else-if="modeMismatch" class="setup-notice warn">所选目录不是 Precedent Loop 知识库。请重新选择，或改为“新建知识库”。</p>
                   </template>
                 </div>

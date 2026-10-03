@@ -8,9 +8,9 @@ import { appConfigSchema, backendEnvironment, dataPaths, executeFile, runtimeCon
 
 export type DirectoryInspection =
   | { kind: "MISSING" | "EMPTY" | "OTHER_NON_EMPTY" }
-  | { kind: "PRODUCT"; storageVersion: 2 }
-  | { kind: "PRODUCT_INCOMPLETE"; storageVersion?: 0 }
-  | { kind: "PRODUCT_UNSUPPORTED"; storageVersion?: number; reason: string }
+  | { kind: "PRODUCT" }
+  | { kind: "PRODUCT_INCOMPLETE" }
+  | { kind: "PRODUCT_UNSUPPORTED"; reason: string }
   | { kind: "NOT_WRITABLE"; reason: string };
 export type DataDirectoryInspection = DirectoryInspection | { kind: "SYNC_RISK"; inspection: DirectoryInspection };
 const markerSchema = z.object({ formatVersion: z.literal(1), createdAt: z.iso.datetime(), dataId: z.uuid() }).strict();
@@ -48,13 +48,13 @@ async function checkAccess(path: string, directory: boolean): Promise<void> {
 }
 
 /** Reads the SQLite header only; never loads a native SQLite module in Electron. */
-export async function readStorageVersion(path: string): Promise<number | undefined> {
+export async function readSchemaCookie(path: string): Promise<number | undefined> {
   const file = await open(path, "r");
   try {
     const header = Buffer.alloc(100);
     const { bytesRead } = await file.read(header, 0, header.length, 0);
     if (bytesRead < 100 || !header.subarray(0, 16).equals(Buffer.from("SQLite format 3\0"))) return undefined;
-    return header.readUInt32BE(60);
+    return header.readUInt32BE(40);
   } finally { await file.close(); }
 }
 
@@ -79,15 +79,13 @@ async function inspectContents(path: string): Promise<DirectoryInspection> {
       catch { return { kind: "PRODUCT_UNSUPPORTED", reason: "数据目录标记无效或格式不受支持" }; }
     }
     if (hasMarker && !await exists(paths.databasePath)) return { kind: "PRODUCT_INCOMPLETE" };
-    if (hasMarker && await readStorageVersion(paths.databasePath) === 0) return { kind: "PRODUCT_INCOMPLETE", storageVersion: 0 };
     if (!hasLayout) return { kind: "PRODUCT_UNSUPPORTED", reason: "主数据库缺失" };
     await checkAccess(dirname(paths.databasePath), true);
     await checkAccess(paths.databasePath, false);
     if (!(await stat(paths.databasePath)).isFile()) return { kind: "PRODUCT_UNSUPPORTED", reason: "主数据库不是普通文件" };
-    const version = await readStorageVersion(paths.databasePath);
-    if (version === 2) return { kind: "PRODUCT", storageVersion: 2 };
-    return { kind: "PRODUCT_UNSUPPORTED", ...(version === undefined ? {} : { storageVersion: version }),
-      reason: version === undefined ? "SQLite 文件头无效" : `不支持存储版本 ${version}` };
+    const schemaCookie = await readSchemaCookie(paths.databasePath);
+    if (schemaCookie === undefined) return { kind: "PRODUCT_UNSUPPORTED", reason: "SQLite 文件头无效" };
+    return { kind: schemaCookie > 0 ? "PRODUCT" : "PRODUCT_INCOMPLETE" };
   } catch (error) { return { kind: "NOT_WRITABLE", reason: `无法读取或写入数据目录：${message(error)}` }; }
 }
 
@@ -137,8 +135,9 @@ async function initializeWithRuntime(path: string, runtime: string): Promise<voi
     await executeFile(node, [await realpath(join(runtime, "apps/server/dist/maintenance-cli.js")), ...args], {
       cwd: path, env: backendEnvironment(config), timeout: 120000, maxBuffer: 1024 * 1024,
     });
-    step = "核对存储版本";
-    if (await readStorageVersion(config.databasePath) !== 2) throw new Error("存储未到达基线版本 2");
+    step = "核对存储已初始化";
+    const schemaCookie = await readSchemaCookie(config.databasePath);
+    if (schemaCookie === undefined || schemaCookie === 0) throw new Error("存储尚未初始化或 SQLite 文件头无效");
   } catch (error) { throw new DataDirectoryError(step, error); }
 }
 

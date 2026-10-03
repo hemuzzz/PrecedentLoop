@@ -1,10 +1,11 @@
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import { AssetNotAccessibleError, AssetNotFoundError, type AssetSearchService } from "../asset/index.js";
-import { compareRankedItems, normalizeRecallExpression, type RankedSearchItem } from "../asset/search.js";
+import { normalizeRecallExpression } from "../asset/search.js";
+import { recallRanking } from "./ranking.js";
 import type { StructuredErrorLogInput, StructuredLogger } from "../logging.js";
 import type { WorkspaceCapabilityService } from "../workspace/capability.js";
 import { KnowledgeError, recallInputSchema, readInputSchema, usedInputSchema,
-  type RecallItem, type RecallResult, type Source } from "./model.js";
+  type RecallItem, type RecallResult, type RecallResponse, type Source } from "./model.js";
 import type { KnowledgeRepository } from "./repository.js";
 
 const characters = (text: string) => Array.from(text).length;
@@ -13,11 +14,11 @@ export class KnowledgeService {
   readonly ids = new SnowflakeIdGenerator();
   constructor(readonly repository: KnowledgeRepository, readonly capabilities: WorkspaceCapabilityService,
     readonly search: AssetSearchService, readonly logger?: StructuredLogger) {}
-  async recall(input: unknown): Promise<RecallResult> {
+  async recall(input: unknown): Promise<RecallResponse> {
     const parsed = recallInputSchema.safeParse(input);
     if (!parsed.success) throw new KnowledgeError("INPUT_INVALID");
     // Deduplicate case and surrounding whitespace only. Internal spaces remain
-    // literal; retain the first expression's spelling in the record and response.
+    // literal; retain the first expression's spelling in the record.
     const expressions = new Map<string, string>();
     for (const query of parsed.data.queries) {
       const key = normalizeRecallExpression(query).phrase;
@@ -28,16 +29,10 @@ export class KnowledgeService {
     const diagnostics: string[] = [];
     const context = { authorizedWorkspaces, workspaceConfigSnapshot: config };
     const result = this.search.readTransaction(() => {
-    const ranks = new Map<string, RankedSearchItem>();
-    for (const query of queries) {
-      for (const rank of this.search.rankedCandidates(context, query)) {
-        const prior = ranks.get(rank.assetId);
-        if (!prior || compareRankedItems(rank, prior) < 0) ranks.set(rank.assetId, rank);
-      }
-    }
+    const ranks = recallRanking(this.search, context, queries);
     const candidates: Candidate[] = [];
     let invalid = 0;
-    for (const rank of [...ranks.values()].sort(compareRankedItems)) {
+    for (const rank of ranks) {
       const assetId = rank.assetId;
       try {
         const asset = this.search.read({ assetId, context });
@@ -46,7 +41,7 @@ export class KnowledgeService {
         const item: RecallItem = { recallItemId: this.ids.next("usg"), assetId, version: asset.version,
           assetScope: asset.scope, assetWorkspace: asset.scope === "WORKSPACE" ? asset.workspace : null,
           title: asset.title, type: asset.type, deliveredMode: "ON_DEMAND",
-          deliveryReasons: [], reference: "asset_read: recallItemId + same capabilityIds" };
+          deliveryReasons: [] };
         candidates.push({ item, summary: asset.summary,
           upgrade: asset.type === "MEMORY" && rank.item.score >= 300 });
       } catch (error) {
@@ -92,9 +87,9 @@ export class KnowledgeService {
     catch (error) {
       if (!(error instanceof KnowledgeError) || error.code !== "USAGE_WRITE_FAILED") throw error;
       this.log({ event: "USAGE_RECALL_WRITE_FAILED", operation: "knowledge_recall", assetIds: result.items.map((item) => item.assetId), errorCode: error.code, error });
-      return degraded(result);
+      return serializeRecall(degraded(result));
     }
-    return result;
+    return serializeRecall(result);
   }
   async read(input: unknown) {
     const parsed = readInputSchema.safeParse(input);
@@ -117,7 +112,7 @@ export class KnowledgeService {
     const fact = { readRef: this.ids.next("usg"), authorizedWorkspaces, assetId, version: asset.version,
       assetScope: asset.scope, assetWorkspace: asset.scope === "WORKSPACE" ? asset.workspace : null,
       recallItemId: source?.recallItemId ?? null, occurredAt: new Date().toISOString() };
-    const response = { ...fact, type: asset.type, title: asset.title, summary: asset.summary, markdown: asset.bodyMarkdown, usageRecorded: true, readRef: fact.readRef as string | null, diagnostics: [] as string[] };
+    const response = { ...fact, type: asset.type, title: asset.title, summary: asset.summary, retrievalTerms: asset.retrievalTerms, markdown: asset.bodyMarkdown, usageRecorded: true, readRef: fact.readRef as string | null, diagnostics: [] as string[] };
     // Single-target response deliberately omits the parent operation and its scopes/query.
     try { this.repository.recordRead(fact); }
     catch (error) {
@@ -159,17 +154,29 @@ function measure(result: RecallResult): number {
   b.deliveredAssets = result.items.length;
   b.downgradedCount = result.items.filter((item) => item.deliveryReasons.length > 0).length;
   b.knowledgeContentCharacters = result.items.reduce((sum, item) => sum + characters(JSON.stringify(item.title)) - 2 + (item.summary === undefined ? 0 : characters(JSON.stringify(item.summary)) - 2), 0);
-  for (let iteration = 0; iteration < 10; iteration++) {
-    const total = characters(JSON.stringify(result));
-    if (total === b.modelVisibleCharacters && b.metadataCharacters === total - b.knowledgeContentCharacters) return total;
-    b.modelVisibleCharacters = total; b.metadataCharacters = total - b.knowledgeContentCharacters;
-  }
-  return characters(JSON.stringify(result));
+  const total = characters(JSON.stringify(serializeRecall(result)));
+  b.modelVisibleCharacters = total; b.metadataCharacters = total - b.knowledgeContentCharacters;
+  return total;
+}
+function serializeRecall(result: RecallResult): RecallResponse {
+  return {
+    usageRecorded: result.usageRecorded, authorizedWorkspaces: result.authorizedWorkspaces,
+    reference: result.usageRecorded ? "asset_read: recallItemId + same capabilityIds"
+      : "asset_read: assetId + expectedVersion=version + same capabilityIds",
+    items: result.items.map(item => ({
+      recallItemId: item.recallItemId, assetId: item.assetId, version: item.version,
+      title: item.title, type: item.type, workspace: item.assetWorkspace,
+      ...(item.summary === undefined ? {} : { summary: item.summary }),
+      ...(item.deliveryReasons.length ? { deliveryReasons: item.deliveryReasons } : {}),
+    })),
+    diagnostics: result.diagnostics,
+    budget: { omittedCount: result.budget.omittedCount, downgradedCount: result.budget.downgradedCount },
+  };
 }
 function degraded(result: RecallResult): RecallResult {
   const response = structuredClone(result);
   response.usageRecorded = false; response.recallId = null;
-  response.items.forEach((item) => { item.recallItemId = null; item.reference = "asset_read: assetId + expectedVersion=version + same capabilityIds"; });
+  response.items.forEach((item) => { item.recallItemId = null; });
   response.diagnostics.push("USAGE_WRITE_FAILED");
   measure(response);
   return response;

@@ -18,5 +18,13 @@ description: 将用户选择的一批 Markdown 整理为完整的零到多个知
 - targetKey、sourceKey、existingAssetRef、pendingRef 只能引用本次输入集合；不能生成路径、Asset ID、candidateId、授权令牌或审批状态。不得把未允许的项目内容分配到 GLOBAL。
 - classification=SELECTED 时，只能在用户指定的 targets 中分类。classification=AUTO 时，程序提供全局与已知工作区，由你根据内容、工作区名称和说明判断归属；通用知识可归全局，项目专属知识应归对应工作区。证据不足以确定归属时返回零条并在 sourceResults 说明，不能把无法归类的项目知识随意放到全局。工作区只能由程序读取 Codex 的本地项目或现有配置，禁止编造新工作区。
 - 每份 source 都必须有一项 sourceResults，说明参与生成、重复、无增量或证据不足。任何需要额外证据的判断都明确保留不确定性，不编造来源或历史验证。
-- 改稿只返回一份完整 title、summary、bodyMarkdown；保持原有章节结构，以及候选身份、类型、范围和正式基线。不要把修改理解为正式接受，不返回文件外层 Frontmatter。
+- 改稿只返回一份完整 title、summary、retrievalTerms、bodyMarkdown；保持原有章节结构，以及候选身份、类型、范围和正式基线。不要把修改理解为正式接受，不返回文件外层 Frontmatter。
 - 只返回符合给定 JSON Schema 的完整结果，禁止 Markdown 代码围栏、截断结果或让程序猜测缺失字段。
+
+## 检索词
+
+整句判定：禁止中文 `。！？；，、` 和英文 `; ! ?`，禁止以英文句号 `.` 结尾；允许空格（`Native Memories`）和中间的点号（`file.ts`）。
+
+起草修订时读不到源码，只能依据所给问题（类型、说明、依据、未命中查询词）与原文，无法确认的内容不要编造。返回完整标题、摘要、检索词、正文与修改说明；已有候选时在其基础上改稿。
+
+每条导入候选及改稿内容必须包含完整 retrievalTerms：3–16 个检索词，每个去首尾空白后为 2–64 个 Unicode 字符，不含换行、控制字符，按不区分大小写去重。使用类名、表名、接口、错误码、文件名、具体中文业务叫法、同义词或缩写，不写整句。不要过宽：不用单独的普通英文词（如 current、previous、unknown、operator、merchant，以及 PENDING 这类单独的状态值），这类词会被大量简短查询命中，把本条知识排到前面；也不用跨很多条知识通用的大词（如单独的“知识”“候选”“结算”）。优先写具体标识或组合词，如 currentVersion、candidate_update、候选版本冲突。示例：["candidate_update", "VERSION_CONFLICT", "候选版本冲突"]。检索词只放在独立字段，不添加正文小节；改稿时保留仍然适用的原检索词并提交完整列表。

@@ -1,19 +1,23 @@
 import type Database from "better-sqlite3";
-import type { AssetScope, AssetType } from "./schema.js";
+import { storedRetrievalTermsSchema, type AssetScope, type AssetType } from "./schema.js";
 import { RepositoryOperationError } from "./errors.js";
 
-export interface AssetContent { title: string; summary: string; bodyMarkdown: string }
+export interface AssetContent { title: string; summary: string; retrievalTerms: string[]; bodyMarkdown: string }
 export interface PreviousContent extends AssetContent { updatedAt: string }
 export interface AssetRecord extends AssetContent {
   assetId: string; knowledgeNumber: number; type: AssetType; scope: AssetScope; workspace: string | null;
   version: number; previousContent: PreviousContent | null; createdAt: string; updatedAt: string;
 }
 export type NewAsset = AssetContent & Pick<AssetRecord, "assetId" | "type" | "scope" | "workspace">;
-type AssetRow = Omit<AssetRecord, "previousContent"> & { previousContent: string | null };
+type AssetRow = Omit<AssetRecord, "previousContent" | "retrievalTerms"> & { previousContent: string | null; retrievalTerms: string };
 const selection = `a.id AS knowledgeNumber, a.asset_id AS assetId, a.asset_type AS type, a.asset_scope AS scope,
-  a.workspace, a.title, a.summary, a.body_markdown AS bodyMarkdown, a.version,
+  a.workspace, a.title, a.summary, a.retrieval_terms AS retrievalTerms, a.body_markdown AS bodyMarkdown, a.version,
   a.previous_content AS previousContent, a.created_at AS createdAt, a.updated_at AS updatedAt`;
-const map = (row: AssetRow): AssetRecord => ({ ...row, previousContent: row.previousContent === null ? null : JSON.parse(row.previousContent) as PreviousContent });
+const map = (row: AssetRow): AssetRecord => {
+  const previous = row.previousContent === null ? null : JSON.parse(row.previousContent) as PreviousContent;
+  return { ...row, retrievalTerms: storedRetrievalTermsSchema.parse(JSON.parse(row.retrievalTerms)),
+    previousContent: previous && { ...previous, retrievalTerms: storedRetrievalTermsSchema.parse(previous.retrievalTerms ?? []) } };
+};
 
 export class AssetRepository {
   constructor(readonly database: Database.Database) {}
@@ -40,21 +44,23 @@ export class AssetRepository {
 
   insert(input: NewAsset): AssetRecord {
     this.assertTransaction();
-    this.database.prepare(`INSERT INTO asset (asset_id,asset_type,asset_scope,workspace,title,summary,body_markdown)
-      VALUES (?,?,?,?,?,?,?)`).run(input.assetId, input.type, input.scope, input.workspace, input.title, input.summary, input.bodyMarkdown);
+    input = { ...input, retrievalTerms: storedRetrievalTermsSchema.parse(input.retrievalTerms) };
+    this.database.prepare(`INSERT INTO asset (asset_id,asset_type,asset_scope,workspace,title,summary,retrieval_terms,body_markdown)
+      VALUES (?,?,?,?,?,?,?,?)`).run(input.assetId, input.type, input.scope, input.workspace, input.title, input.summary, JSON.stringify(input.retrievalTerms), input.bodyMarkdown);
     this.index(input);
     return this.get(input.assetId)!;
   }
 
   revise(assetId: string, version: number, content: AssetContent): AssetRecord {
     this.assertTransaction();
+    content = { ...content, retrievalTerms: storedRetrievalTermsSchema.parse(content.retrievalTerms) };
     const current = this.get(assetId);
     if (!current || current.version !== version) throw new RepositoryOperationError("VERSION_CONFLICT", "正式知识版本已变化或已删除");
-    if (current.title === content.title && current.summary === content.summary && current.bodyMarkdown === content.bodyMarkdown) return current;
+    if (current.title === content.title && current.summary === content.summary && current.bodyMarkdown === content.bodyMarkdown && JSON.stringify(current.retrievalTerms) === JSON.stringify(content.retrievalTerms)) return current;
     const changed = this.database.prepare(`UPDATE asset SET
-      previous_content=json_object('title',title,'summary',summary,'bodyMarkdown',body_markdown,'updatedAt',updated_at),
-      title=?,summary=?,body_markdown=?,version=version+1,updated_at=? WHERE asset_id=? AND version=? AND is_deleted = 0`)
-      .run(content.title, content.summary, content.bodyMarkdown, new Date().toISOString(), assetId, version);
+      previous_content=json_object('title',title,'summary',summary,'retrievalTerms',json(retrieval_terms),'bodyMarkdown',body_markdown,'updatedAt',updated_at),
+      title=?,summary=?,retrieval_terms=?,body_markdown=?,version=version+1,updated_at=? WHERE asset_id=? AND version=? AND is_deleted = 0`)
+      .run(content.title, content.summary, JSON.stringify(content.retrievalTerms), content.bodyMarkdown, new Date().toISOString(), assetId, version);
     if (changed.changes !== 1) throw new RepositoryOperationError("VERSION_CONFLICT", "正式知识版本已变化或已删除");
     this.database.prepare("DELETE FROM asset_fts WHERE asset_id=?").run(assetId);
     this.index({ ...current, ...content });
@@ -70,8 +76,8 @@ export class AssetRepository {
   }
 
   private index(input: NewAsset): void {
-    this.database.prepare("INSERT INTO asset_fts (asset_id,title,summary,body_markdown) VALUES (?,?,?,?)")
-      .run(input.assetId, input.title, input.summary, input.bodyMarkdown);
+    this.database.prepare("INSERT INTO asset_fts (asset_id,title,summary,retrieval_terms,body_markdown) VALUES (?,?,?,?,?)")
+      .run(input.assetId, input.title, input.summary, JSON.stringify(input.retrievalTerms), input.bodyMarkdown);
   }
   private assertTransaction(): void {
     if (!this.database.inTransaction) throw new Error("Asset writes require a write transaction");

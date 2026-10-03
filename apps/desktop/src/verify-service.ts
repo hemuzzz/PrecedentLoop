@@ -22,7 +22,7 @@ export async function allocatePort(): Promise<number> {
 export async function prepareFixture(resources: string, directory: string): Promise<{ config: RuntimeConfig; capability: string; assetId: string }> {
   const runtime = join(resources, "runtime");
   await initializeDataDirectory(directory, runtime);
-  assert.deepEqual(await inspectDataDirectory(directory), { kind: "PRODUCT", storageVersion: 2 });
+  assert.deepEqual(await inspectDataDirectory(directory), { kind: "PRODUCT" });
   const nodePath = await verifyBundledNode(runtime);
   const config = runtimeConfig(appConfigSchema.parse({ configVersion: 1, setupVersion: 1, setupCompleted: true,
     dataDirectory: directory, port: await allocatePort() }));
@@ -38,6 +38,7 @@ export async function prepareFixture(resources: string, directory: string): Prom
     const {CandidateRepository}=await import(pathToFileURL(join(dist,'asset/candidate-repository.js')));
     const database=openDatabase(db);
     try { new CandidateRepository(database).write('fixture','accept','fixture',()=>new AssetRepository(database).insert({
+      retrievalTerms: [],
       assetId:'${assetId}',type:'MEMORY',scope:'WORKSPACE',workspace:'alpha',title:'桌面验收',summary:'桌面验收唯一词',bodyMarkdown:'# 桌面验收\\n\\n桌面验收唯一词。'
     })); } finally { database.close(); }
     const {handleCodexHook}=await import(pathToFileURL(join(dist,'hook/user-prompt-submit.js')));
@@ -101,7 +102,7 @@ export async function verifyPackagedService(resources: string): Promise<void> {
     }));
     await backend.stop();
     await closed;
-    process.stdout.write(JSON.stringify({ isolatedService: "PASS", buildId: build.buildId, checks: ["initialize-baseline-2", "IPC", "readiness", "Hub", "Recall/Read/Used", "Origin", "shutdown"] }) + "\n");
+    process.stdout.write(JSON.stringify({ isolatedService: "PASS", buildId: build.buildId, checks: ["initialize-storage", "IPC", "readiness", "Hub", "Recall/Read/Used", "Origin", "shutdown"] }) + "\n");
   } finally {
     await backend?.stop();
     await rm(directory, { recursive: true, force: true });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CandidateService, type CandidateSummary, type PrepareItem } from "../src/asset/candidate-service.js";
 
-export const content = (bodyMarkdown = "原文"): PrepareItem => ({ title: "候选知识", summary: "可核实的摘要", bodyMarkdown, type: "MEMORY", target: { scope: "GLOBAL" } });
+export const content = (bodyMarkdown = "原文"): PrepareItem => ({ title: "候选知识", summary: "可核实的摘要", retrievalTerms: ["候选写入", "版本校验", "隔离验证"], bodyMarkdown, type: "MEMORY", target: { scope: "GLOBAL" } });
 export const selection = (item: CandidateSummary, requestId: string) => ({ requestId, candidateId: item.candidateId, assetId: item.assetId, candidateVersion: item.version });
 export async function candidateFixture() {
   const root = await mkdtemp(join(tmpdir(), "candidate-test-"));

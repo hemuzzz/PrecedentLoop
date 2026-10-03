@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { detectAgent } from "./agent-detection.js";
 import { appConfigSchema, dataPaths, readAppConfig, readBuildInfo, serializeAppConfig, writeAppConfig, type AppConfig } from "./config.js";
-import { copyDataDirectory, ensureMarker, initializeStorage, inspectDataDirectory, pathsOverlap, prepareDirectoryLayout, readStorageVersion, type DataDirectoryInspection } from "./data-directory.js";
+import { copyDataDirectory, ensureMarker, initializeStorage, inspectDataDirectory, pathsOverlap, prepareDirectoryLayout, type DataDirectoryInspection } from "./data-directory.js";
 import { backendFailureMode, determineStartupMode, type StartupMode } from "./startup.js";
 import { readSetupState, setupDraftSchema, writeSetupState } from "./setup-state.js";
 import type { AgentDetection, AgentName, CoreCheck, DirectoryCheck, PreparationProgress, PreparationStep, PrepareRequest, SettingsSnapshot, SetupDraft, SetupSnapshot, SetupStateFile } from "./setup-contract.js";
@@ -183,7 +183,7 @@ export class SetupService {
   async getLocalSettings(): Promise<LocalSettings> {
     this.assertSettings();
     const config = await this.integrationConfig(), paths = dataPaths(config.dataDirectory), build = await readBuildInfo(this.dependencies.runtime);
-    return { dataDirectory: config.dataDirectory, paths, storageVersion: await readStorageVersion(paths.databasePath) ?? null,
+    return { dataDirectory: config.dataDirectory, paths,
       runtime: { nodeVersion: build.nodeVersion, arch: build.arch, modules: build.modules }, port: config.port,
       pendingPort: this.pendingPort, lastRestart: this.lastRestart, lastDataMove: this.lastDataMove };
   }
@@ -310,7 +310,7 @@ export class SetupService {
     else if (mode === "migrate" && !["MISSING", "EMPTY"].includes(kind)) reason = kind === "NOT_WRITABLE" ? `无法写入所选位置：${(inner(inspection) as { reason: string }).reason}` : "迁移目标必须是不存在或空的目录；已有知识库请使用“关联其他数据目录”。";
     else if (mode === "associate" && kind !== "PRODUCT") {
       const checked = inner(inspection);
-      reason = `${"reason" in checked ? `${checked.reason}。` : ""}请选择基线版本 2 的已有本产品数据目录；关联不会创建或覆盖文件。`;
+      reason = `${"reason" in checked ? `${checked.reason}。` : ""}请选择已初始化的本产品数据目录；关联不会创建或覆盖文件。`;
     }
     const plan: DataMovePlan = { planId: reason ? null : randomUUID(), mode, from, to, syncRisk: inspection.kind === "SYNC_RISK",
       statistics: reason ? {} : await statistics(mode === "migrate" ? from : to), reason };
@@ -538,7 +538,7 @@ export class SetupService {
     const status = config ? await this.dependencies.backendStatus(config).catch(() => ({ serviceReady: false, mcpReady: false })) : { serviceReady: false, mcpReady: false };
     return [
       { id: "directory", ok: usable, detail: usable ? config!.dataDirectory : "数据目录不可用，请返回本地数据步骤查看原因。" },
-      { id: "storage", ok: usable, detail: usable ? "基线版本 2 · 存储已就绪" : "存储未就绪，请选择基线版本 2 的数据目录；新目录需先初始化。" },
+      { id: "storage", ok: usable, detail: usable ? "存储已就绪" : "存储未就绪，请选择已初始化的本产品数据目录；新目录需先初始化。" },
       runtime,
       { id: "service", ok: status.serviceReady, detail: status.serviceReady ? "服务已启动 · 索引已就绪" : "本地服务与索引尚未就绪，请重试或打开日志。" },
       { id: "mcp", ok: status.serviceReady && status.mcpReady, detail: config ? `http://127.0.0.1:${config.port}/mcp` : "等待服务" },
@@ -580,7 +580,7 @@ export class SetupService {
   }
   async selectRecoveryDirectory(path: string): Promise<SetupSnapshot> {
     if (this.startup.mode !== "RECOVERY") throw new Error("仅恢复模式允许关联新的位置。");
-    if (inner(await inspectDataDirectory(path, this.dependencies.home)).kind !== "PRODUCT") throw new Error("请选择基线版本 2 的已有本产品数据目录，不会创建或覆盖文件。");
+    if (inner(await inspectDataDirectory(path, this.dependencies.home)).kind !== "PRODUCT") throw new Error("请选择已初始化的本产品数据目录，不会创建或覆盖文件。");
     await this.dependencies.stopBackend();
     this.backendDirectory = undefined;
     const previous = await readAppConfig(this.dependencies.userData);

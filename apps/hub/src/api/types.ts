@@ -12,6 +12,7 @@ export interface AssetLibraryItem {
   score?: number;
   searchStrategy?: SearchStrategy;
   summary: string;
+  retrievalTerms: string[];
   title: string;
   type: AssetType;
   workspace: string | null;
@@ -31,6 +32,7 @@ export interface AssetDetail extends AssetLibraryItem {
 }
 
 export interface InboxItem {
+  issues?: AssetIssue[];
   knowledgeNumber: number | null;
   candidateId: string;
   number: number;
@@ -45,6 +47,7 @@ export interface InboxItem {
   bodyMarkdown: string;
   scope: AssetScope;
   summary: string;
+  retrievalTerms: string[];
   title: string;
   type: AssetType;
   workspace: string | null;
@@ -53,13 +56,17 @@ export interface InboxItem {
 export interface InboxResult {
   managed?: boolean;
   items: InboxItem[];
+  issueCards: IssueCard[];
 }
+
+export type { AssetIssue, IssueCard } from "../../../server/src/asset/issue-repository.js";
+import type { AssetIssue, IssueCard } from "../../../server/src/asset/issue-repository.js";
 
 export interface AiOperation {
   requestId: string;
   state: "RUNNING" | "SUCCEEDED" | "FAILED" | "NOT_COMMITTED";
   operation?: string;
-  result?: { count?: number; changed?: boolean; candidateId?: string; warnings?: string[]; sourceResults?: Array<{ name: string; explanation: string }> };
+  result?: { count?: number; changed?: boolean; candidateId?: string; explanation?: string; warnings?: string[]; sourceResults?: Array<{ name: string; explanation: string }> };
   error?: { code: string; message: string };
 }
 export interface AiProvider { id: "codex" | "claude"; available: boolean; reason?: string; isDefault?: boolean }

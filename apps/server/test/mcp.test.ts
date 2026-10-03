@@ -4,7 +4,7 @@ import { request } from "node:http";
 import test from "node:test";
 import { generateWorkspaceCapability, SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { RecallResult } from "../src/knowledge/model.js";
+import type { RecallResponse as RecallResult } from "../src/knowledge/model.js";
 import type { KnowledgeService } from "../src/knowledge/service.js";
 import { knowledgeFixture, serveKnowledge, toolData, toolPayload, callTool } from "../test-support/knowledge-fixture.js";
 import { ServerConfigurationError, serverConfigurationFromEnvironment } from "../src/runtime.js";
@@ -41,8 +41,8 @@ test("MCP exposes five strict object-root tools and rejects authority overrides 
     const properties = [
       ["capabilityIds", "queries"], ["assetId", "capabilityIds", "expectedVersion", "recallItemId"],
       ["capabilityIds", "readRef", "recallItemId"],
-      ["bodyMarkdown", "capabilityIds", "conclusion", "conditions", "coverage", "evidence", "prerequisites", "purpose", "reasons", "recheckPoints", "related", "requestId", "reviewedCandidateIds", "revision", "steps", "stopConditions", "summary", "title", "trigger", "type", "unverified", "verification", "verified"],
-      ["bodyMarkdown", "candidateId", "candidateVersion", "capabilityIds", "requestId", "summary", "title"],
+      ["bodyMarkdown", "capabilityIds", "conclusion", "conditions", "coverage", "evidence", "prerequisites", "purpose", "reasons", "recheckPoints", "related", "requestId", "retrievalTerms", "reviewedCandidateIds", "revision", "steps", "stopConditions", "summary", "title", "trigger", "type", "unverified", "verification", "verified"],
+      ["bodyMarkdown", "candidateId", "candidateVersion", "capabilityIds", "requestId", "retrievalTerms", "summary", "title"],
     ];
     definitions.forEach((tool, i) => {
       assert.equal(tool.inputSchema.type, "object");
@@ -162,10 +162,11 @@ test("eight simultaneous MCP clients never share capabilities or delivered fact 
         assert.deepEqual(read.authorizedWorkspaces, [i % 2 ? "beta" : "alpha"]);
         assert.deepEqual(f.repository.readFact(read.readRef!)!.authorizedWorkspaces, read.authorizedWorkspaces);
       }
-      assert.deepEqual((await f.projection.recall(recall.recallId!))!.operation.authorizedWorkspaces, recall.authorizedWorkspaces);
-      return recall;
+      const recallId = f.repository.item(recall.items[0]!.recallItemId!)!.recallId;
+      assert.deepEqual((await f.projection.recall(recallId))!.operation.authorizedWorkspaces, recall.authorizedWorkspaces);
+      return recallId;
     }));
-    assert.equal(new Set(results.map(result => result.recallId)).size, 8);
+    assert.equal(new Set(results).size, 8);
     assert.deepEqual(f.projection.totals(), { recallOperations: 8, recallItems: 16, reads: 16, used: 0 });
   } finally { await f.close(); }
 });
@@ -177,8 +178,8 @@ test("only delivered items and successful Reads write facts; Used is source-idem
 
     const recall = toolData<RecallResult>(await callTool(f.client, "knowledge_recall", { capabilityIds: [f.alpha], queries: ["shared"] }));
     assert.equal(recall.items.length, 8);
-    assert.deepEqual(f.projection.items("i.recall_id=?", recall.recallId!).map(item => item.assetId), recall.items.map(item => item.assetId));
-    const item = recall.items.find(item => item.assetWorkspace === "alpha")!;
+    assert.deepEqual(f.projection.items("i.recall_id=?", f.repository.item(recall.items[0]!.recallItemId!)!.recallId).map(item => item.assetId), recall.items.map(item => item.assetId));
+    const item = recall.items.find(item => item.workspace === "alpha")!;
     const read = toolData<ReadResult>(await callTool(f.client, "asset_read", { capabilityIds: [f.alpha], recallItemId: item.recallItemId }));
     const first = toolData<UsedResult>(await callTool(f.client, "asset_mark_used", { capabilityIds: [f.alpha], recallItemId: item.recallItemId }));
     assert.equal(first.created, true);
@@ -202,7 +203,8 @@ test("SQL write failure degrades Recall/Read delivery without stable references 
     for (const table of ["recall_item", "read_operation", "used_event"]) f.repository.db.exec(
       `CREATE TRIGGER fail_${table} BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'fixture'); END`);
     const recall = toolData<RecallResult>(await callTool(f.client, "knowledge_recall", { capabilityIds: [f.alpha], queries: ["shared"] }));
-    assert.equal(recall.usageRecorded, false); assert.equal(recall.recallId, null);
+    assert.equal(recall.usageRecorded, false); assert.equal("recallId" in recall, false);
+    assert.equal(recall.reference, "asset_read: assetId + expectedVersion=version + same capabilityIds");
     assert.deepEqual(recall.items.map(item => item.assetId), [f.alphaAsset.assetId, f.global.assetId]);
     assert.ok(recall.items.every(item => item.recallItemId === null));
     assert.ok(recall.diagnostics.includes("USAGE_WRITE_FAILED"));

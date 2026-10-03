@@ -3,14 +3,17 @@ import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import type { IssueRecordResult } from "../asset/issue-service.js";
 
 export const CAPTURE_CACHE_ENV = "PRECEDENT_LOOP_CAPTURE_CACHE_PATH";
 export const CAPTURE_COMMAND_ENV = "PRECEDENT_LOOP_CAPTURE_COMMAND";
 export const ASSESSMENT_MAX_BYTES = 8192;
+export const RECORD_MAX_BYTES = 16384;
+export const RECORD_TIMEOUT_MS = 3000;
 const identity = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 export const turnIdentitySchema = z.object({ sessionId: identity, turnId: identity });
 export type TurnIdentity = z.infer<typeof turnIdentitySchema>;
-const assessmentSchema = turnIdentitySchema.extend({
+const cachedAssessmentSchema = turnIdentitySchema.extend({
   outcome: z.enum(["SKIPPED", "NO_INCREMENT", "CANDIDATE", "FAILED"]),
   reason: z.string().trim().min(1).max(2000),
   references: z.array(z.string().trim().min(1).max(1024)).max(16).optional(),
@@ -18,6 +21,8 @@ const assessmentSchema = turnIdentitySchema.extend({
   message: "CANDIDATE requires a candidate or read-only suggestion reference",
 });
 export type Assessment = z.infer<typeof assessmentSchema>;
+export const assessmentSchema = cachedAssessmentSchema.safeExtend({ knowledgeIssues: z.unknown().optional() }).strict();
+export interface AssessmentResult { recorded: true; issues?: IssueRecordResult | { recorded: 0; error: "ISSUES_NOT_RECORDED" | "ISSUES_INVALID" } }
 export type CaptureHookOutput = { systemMessage?: string };
 export type HookHost = "codex" | "claude";
 
@@ -73,8 +78,8 @@ async function readSmallFile(path: string, limit: number): Promise<string | null
   } finally { await file.close(); }
 }
 
-export async function recordAssessment(cachePath: string, input: unknown, host: HookHost = "codex"): Promise<void> {
-  const assessment = assessmentSchema.parse(input);
+export async function recordAssessment(cachePath: string, input: unknown, host: HookHost = "codex", databasePath?: string): Promise<AssessmentResult> {
+  const { knowledgeIssues, ...assessment } = assessmentSchema.parse(input);
   const bytes = JSON.stringify(assessment) + "\n";
   if (Buffer.byteLength(bytes) > ASSESSMENT_MAX_BYTES) throw new Error("Assessment too large");
   const directory = assessmentDirectory(cachePath, assessment, host);
@@ -87,6 +92,13 @@ export async function recordAssessment(cachePath: string, input: unknown, host: 
   } finally {
     await unlink(temporary).catch(error => { if (!hasCode(error, "ENOENT")) throw error; });
   }
+  if (knowledgeIssues === undefined) return { recorded: true };
+  if (!Array.isArray(knowledgeIssues)) return { recorded: true, issues: { recorded: 0, error: "ISSUES_INVALID" } };
+  try {
+    if (!databasePath || !isAbsolute(databasePath)) throw new Error("Database path unavailable");
+    const { IssueService } = await import("../asset/issue-service.js");
+    return { recorded: true, issues: new IssueService(databasePath).record({ ...assessment, knowledgeIssues }, host === "codex" ? "CODEX" : "CLAUDE") };
+  } catch { return { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } }; }
 }
 
 export const CHECK_UNAVAILABLE = "Precedent Loop：知识评估检查不可用（标识、缓存或输入异常）；本轮允许结束，未判定无增量。";
@@ -110,7 +122,7 @@ export async function handleCaptureHook(input: unknown, cachePath: string, host:
       warning = "本轮观察到工程相关工具活动，但未找到知识评估记录。";
     } else {
       let assessment: Assessment | undefined;
-      try { assessment = assessmentSchema.parse(JSON.parse(bytes)); } catch { /* Invalid declarations are warnings, never NO_INCREMENT. */ }
+      try { assessment = cachedAssessmentSchema.parse(JSON.parse(bytes)); } catch { /* Invalid declarations are warnings, never NO_INCREMENT. */ }
       if (!assessment || assessment.sessionId !== turn.sessionId || assessment.turnId !== turn.turnId) {
         warning = "本轮知识评估记录无效或身份不符。";
       } else if (assessment.outcome === "FAILED") {

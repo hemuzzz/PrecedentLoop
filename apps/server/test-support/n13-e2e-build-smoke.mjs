@@ -492,7 +492,7 @@ async function writeAsset(relativePath, source) {
   const db = openDatabase(databasePath);
   try {
     const assets = new AssetRepository(db), candidates = new CandidateRepository(db);
-    const content = { assetId: source.id, type: source.type, scope: source.scope, workspace: source.workspace ?? null, title: source.title, summary: source.summary, bodyMarkdown: source.body };
+    const content = { assetId: source.id, type: source.type, scope: source.scope, workspace: source.workspace ?? null, title: source.title, summary: source.summary, retrievalTerms: [], bodyMarkdown: source.body };
     candidates.write(idGenerator.next("tsk"), "prepare", source.id, () => {
       if (relativePath.startsWith("inbox/")) return candidates.insert({ ...content, candidateId: idGenerator.next("cnd"), intent: "NEW", baseVersion: null });
       const current = assets.get(source.id);

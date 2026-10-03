@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { BASELINE_SCHEMA_SQL, DATABASE_VERSION } from "../src/storage/schema.js";
+import { BASELINE_SCHEMA_SQL } from "../src/storage/schema.js";
 import { AssetRepository, type NewAsset } from "../src/asset/asset-repository.js";
 import { CandidateRepository } from "../src/asset/candidate-repository.js";
 import { knowledgeFixture } from "../test-support/knowledge-fixture.js";
 
 function fixture() {
   const db = new Database(":memory:");
-  db.pragma("foreign_keys = ON"); db.exec(BASELINE_SCHEMA_SQL); db.pragma(`user_version=${DATABASE_VERSION}`);
+  db.pragma("foreign_keys = ON"); db.exec(BASELINE_SCHEMA_SQL);
   return { db, assets: new AssetRepository(db), candidates: new CandidateRepository(db) };
 }
 const content: NewAsset = { assetId: "ast1", type: "MEMORY", scope: "GLOBAL", workspace: null,
-  title: "测试知识", summary: "搜索事务", bodyMarkdown: "# 测试知识\n\natomic storage" };
+  title: "测试知识", summary: "搜索事务", retrievalTerms: [], bodyMarkdown: "# 测试知识\n\natomic storage" };
 
 test("v2 constraints, defaults, business keys and approved indexes", t => {
   const { db, assets, candidates } = fixture(); t.after(() => db.close());
@@ -36,9 +36,9 @@ test("revision rotates previous content atomically, checks version, and updates 
   const original = candidates.write("new", "accept", "1", () => assets.insert(content));
   assert.equal(assets.search([], '"atomic"').length, 1);
   const revised = candidates.write("revision", "accept", "2", () => assets.revise("ast1", 0,
-    { title: "新标题", summary: "新摘要", bodyMarkdown: "changed searchable" }));
+    { title: "新标题", summary: "新摘要", retrievalTerms: [], bodyMarkdown: "changed searchable" }));
   assert.equal(revised.version, 1);
-  assert.deepEqual(revised.previousContent, { title: content.title, summary: content.summary, bodyMarkdown: content.bodyMarkdown, updatedAt: original.updatedAt });
+  assert.deepEqual(revised.previousContent, { title: content.title, summary: content.summary, retrievalTerms: [], bodyMarkdown: content.bodyMarkdown, updatedAt: original.updatedAt });
   assert.equal(assets.search([], '"atomic"').length, 0); assert.equal(assets.search([], '"searchable"').length, 1);
   assert.throws(() => candidates.write("stale", "accept", "3", () => assets.revise("ast1", 0, content)), { code: "VERSION_CONFLICT" });
   assert.equal(candidates.receipt("stale"), undefined);
@@ -135,6 +135,7 @@ test("deleted knowledge and facts are filtered at read, Used and projection boun
     const asset = await f.asset({ title: "soft delete searchable" });
     const recalled = await f.service.recall({ capabilityIds: [], queries: ["searchable"] });
     const recallItemId = recalled.items[0]!.recallItemId!;
+    const recallId = f.repository.item(recallItemId)!.recallId;
     const read = await f.service.read({ capabilityIds: [], recallItemId });
     await f.service.used({ capabilityIds: [], readRef: read.readRef });
     f.remove(asset.assetId);
@@ -144,10 +145,10 @@ test("deleted knowledge and facts are filtered at read, Used and projection boun
     assert.equal((await f.projection.usage()).items[0]!.assetTitle, null);
     assert.throws(() => f.repository.recordUsed({ usedId: "usg999", assetId: asset.assetId, recallItemId, directReadRef: null, authorizedWorkspaces: [], occurredAt: new Date().toISOString() }), { code: "ASSET_NOT_ACCESSIBLE" });
     const db = f.repository.db;
-    for (const [table, key, id] of [["used_event", "asset_id", asset.assetId], ["read_operation", "read_ref", read.readRef], ["recall_item", "recall_item_id", recallItemId], ["recall_operation", "recall_id", recalled.recallId]] as const)
+    for (const [table, key, id] of [["used_event", "asset_id", asset.assetId], ["read_operation", "read_ref", read.readRef], ["recall_item", "recall_item_id", recallItemId], ["recall_operation", "recall_id", recallId]] as const)
       db.prepare(`UPDATE ${table} SET is_deleted=1,updated_at=? WHERE ${key}=?`).run(new Date().toISOString(), id);
     assert.equal(f.repository.item(recallItemId), undefined); assert.equal(f.repository.readFact(read.readRef!), undefined);
-    assert.deepEqual((await f.projection.usage()).items, []); assert.equal(await f.projection.recall(recalled.recallId!), null);
+    assert.deepEqual((await f.projection.usage()).items, []); assert.equal(await f.projection.recall(recallId), null);
     assert.deepEqual(f.repository.summarizeByAsset(asset.assetId), { recallCount: 0, readCount: 0, totalUsedCount: 0 });
     assert.deepEqual(f.projection.items("i.asset_id=?", asset.assetId), []);
     await assert.rejects(f.service.read({ capabilityIds: [], recallItemId }), { code: "SOURCE_NOT_FOUND" });

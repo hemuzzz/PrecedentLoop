@@ -180,7 +180,7 @@ test("Inbox lists current pending rows, hides processed candidates, and rejects 
   const fixture = await createFixture();
   try {
     assert.deepEqual(dataItems((await getJson(fixture, "/api/inbox")).body), []);
-    const prepared = await fixture.candidateService.prepare("pending", [{ title: "Inbox valid", summary: "Valid candidate", bodyMarkdown: "candidate", type: "MEMORY", target: { scope: "GLOBAL" } }]);
+    const prepared = await fixture.candidateService.prepare("pending", [{ title: "Inbox valid", summary: "Valid candidate", retrievalTerms: ["候选写入", "版本校验", "隔离验证"], bodyMarkdown: "candidate", type: "MEMORY", target: { scope: "GLOBAL" } }]);
     assert.ok(!("status" in prepared)); const candidate = prepared.candidates[0]!;
     assert.deepEqual(dataItems((await getJson(fixture, "/api/inbox")).body).map(item => item.assetId), [candidate.assetId]);
     await fixture.candidateService.reject({ requestId: "reject", candidateId: candidate.candidateId, assetId: candidate.assetId, candidateVersion: 0 });
@@ -213,7 +213,7 @@ test("REST lists persistent Recall/Read/Used facts with strict pagination, asset
     assert.equal(recalls.length, 1);
     assert.deepEqual(recalls[0]!.authorizedWorkspaces, ["alpha"]);
     assert.deepEqual(recalls[0]!.queries, ["shared knowledge"]);
-    const detail = dataObject((await getJson(fixture, `/api/recalls/${recall.recallId}`)).body);
+    const detail = dataObject((await getJson(fixture, `/api/recalls/${recalls[0]!.recallId}`)).body);
     assert.deepEqual((detail.items as Array<{ assetId: string }>).map(item => item.assetId), recall.items.map(item => item.assetId));
     assert.ok((detail.items as Array<{ assetTitle: string | null }>).every(item => item.assetTitle === "Shared knowledge"));
     const workspaces = dataItems((await getJson(fixture, "/api/workspaces")).body);
@@ -235,7 +235,7 @@ test("REST lists persistent Recall/Read/Used facts with strict pagination, asset
     assert.equal(missing.length, 2);
     assert.ok(missing.every(item => item.assetTitle === null));
     assert.deepEqual(missing.map(item => item.id), filtered.map(item => item.id));
-    const missingRecall = dataObject((await getJson(fixture, `/api/recalls/${recall.recallId}`)).body);
+    const missingRecall = dataObject((await getJson(fixture, `/api/recalls/${recalls[0]!.recallId}`)).body);
     const missingRecallItems = missingRecall.items as Array<{ assetId: string; assetTitle: string | null }>;
     assert.equal(missingRecallItems.length, recall.items.length);
     assert.equal(missingRecallItems.find(item => item.assetId === fixture.alphaAssetId)!.assetTitle, null);
@@ -260,7 +260,7 @@ test("System Status reports actual schema version and degrades without leaking p
     assert.equal(ready.status, 200);
     assert.equal((dataObject(ready.body).service as Record<string, unknown>).readiness, "READY");
     assert.deepEqual(dataObject(ready.body).mcpEndpoint, { path: "/mcp", ready: true });
-    assert.deepEqual(dataObject(ready.body).storage, { schemaVersion: 2, formalAssetCount: 3, inboxAssetCount: 0 });
+    assert.deepEqual(dataObject(ready.body).storage, { formalAssetCount: 3, inboxAssetCount: 0 });
     await writeFile(fixture.workspaceConfigPath, "invalid");
     const degraded = await getJson(fixture, "/api/system/status");
     assert.equal(degraded.status, 200);
@@ -281,7 +281,7 @@ test("N09 exposes read-only GET APIs with uniform envelopes and local Host/Origi
       `/api/assets/${fixture.alphaAssetId}`,
       "/api/inbox",
       "/api/recalls",
-      `/api/recalls/${recall.recallId}`,
+      `/api/recalls/${fixture.repository.item(recall.items[0]!.recallItemId!)!.recallId}`,
       "/api/workspaces",
       "/api/usage",
       "/api/system/status",

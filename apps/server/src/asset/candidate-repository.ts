@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { assertDatabase } from "../storage/schema.js";
 import type { AssetContent, NewAsset } from "./asset-repository.js";
 import { RepositoryOperationError } from "./errors.js";
+import { storedRetrievalTermsSchema } from "./schema.js";
 
 export type CandidateStatus = "PENDING" | "DEFERRED" | "ACCEPTED" | "REJECTED";
 export type WriteOperation = "prepare" | "import" | "update" | "rewrite" | "defer" | "reject" | "accept" | "delete";
@@ -11,40 +12,45 @@ export interface CandidateRecord extends NewAsset {
 }
 export interface OperationReceipt { requestId: string; inputHash: string; operation: WriteOperation; result: unknown }
 const selection = `c.id AS number, c.candidate_id AS candidateId, c.asset_id AS assetId, c.intent,
-  c.asset_type AS type, c.asset_scope AS scope, c.workspace, c.title, c.summary, c.body_markdown AS bodyMarkdown,
+  c.asset_type AS type, c.asset_scope AS scope, c.workspace, c.title, c.summary, c.retrieval_terms AS retrievalTerms, c.body_markdown AS bodyMarkdown,
   c.version, c.base_version AS baseVersion, c.status, c.created_at AS createdAt, c.updated_at AS updatedAt`;
+type CandidateRow = Omit<CandidateRecord, "retrievalTerms"> & { retrievalTerms: string };
+const map = (row: CandidateRow): CandidateRecord => ({ ...row, retrievalTerms: storedRetrievalTermsSchema.parse(JSON.parse(row.retrievalTerms)) });
 
 export class CandidateRepository {
   constructor(readonly database: Database.Database) { assertDatabase(database); }
   list(): CandidateRecord[] {
-    return this.database.prepare<[], CandidateRecord>(`SELECT ${selection} FROM asset_candidate c
-      WHERE c.is_deleted = 0 AND c.status IN ('PENDING','DEFERRED') ORDER BY c.updated_at DESC,c.candidate_id DESC`).all();
+    return this.database.prepare<[], CandidateRow>(`SELECT ${selection} FROM asset_candidate c
+      WHERE c.is_deleted = 0 AND c.status IN ('PENDING','DEFERRED') ORDER BY c.updated_at DESC,c.candidate_id DESC`).all().map(map);
   }
   get(candidateId: string): CandidateRecord | undefined {
-    return this.database.prepare<[string], CandidateRecord>(`SELECT ${selection} FROM asset_candidate c
+    const row = this.database.prepare<[string], CandidateRow>(`SELECT ${selection} FROM asset_candidate c
       WHERE c.candidate_id=? AND c.is_deleted = 0`).get(candidateId);
+    return row && map(row);
   }
   byAsset(assetId: string): CandidateRecord | undefined {
-    return this.database.prepare<[string], CandidateRecord>(`SELECT ${selection} FROM asset_candidate c
+    const row = this.database.prepare<[string], CandidateRow>(`SELECT ${selection} FROM asset_candidate c
       WHERE c.asset_id=? AND c.is_deleted = 0 AND c.status IN ('PENDING','DEFERRED')`).get(assetId);
+    return row && map(row);
   }
   insert(record: NewAsset & Pick<CandidateRecord, "candidateId" | "intent" | "baseVersion">): CandidateRecord {
     this.assertTransaction();
     this.database.prepare(`INSERT INTO asset_candidate
-      (candidate_id,asset_id,intent,asset_type,asset_scope,workspace,title,summary,body_markdown,base_version,status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING')`).run(record.candidateId, record.assetId, record.intent, record.type,
-      record.scope, record.workspace, record.title, record.summary, record.bodyMarkdown, record.baseVersion);
+      (candidate_id,asset_id,intent,asset_type,asset_scope,workspace,title,summary,retrieval_terms,body_markdown,base_version,status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING')`).run(record.candidateId, record.assetId, record.intent, record.type,
+      record.scope, record.workspace, record.title, record.summary, JSON.stringify(storedRetrievalTermsSchema.parse(record.retrievalTerms)), record.bodyMarkdown, record.baseVersion);
     return this.get(record.candidateId)!;
   }
   updateContent(candidateId: string, version: number, content: AssetContent): CandidateRecord {
     this.assertTransaction();
+    content = { ...content, retrievalTerms: storedRetrievalTermsSchema.parse(content.retrievalTerms) };
     const current = this.get(candidateId);
     if (!current || current.version !== version || !["PENDING", "DEFERRED"].includes(current.status)) this.conflict();
-    const changed = current.title !== content.title || current.summary !== content.summary || current.bodyMarkdown !== content.bodyMarkdown;
+    const changed = current.title !== content.title || current.summary !== content.summary || current.bodyMarkdown !== content.bodyMarkdown || JSON.stringify(current.retrievalTerms) !== JSON.stringify(content.retrievalTerms);
     if (changed || current.status !== "PENDING") {
-      const result = this.database.prepare(`UPDATE asset_candidate SET title=?,summary=?,body_markdown=?,
+      const result = this.database.prepare(`UPDATE asset_candidate SET title=?,summary=?,retrieval_terms=?,body_markdown=?,
         version=version+?,status='PENDING',updated_at=? WHERE candidate_id=? AND version=?
-        AND status IN ('PENDING','DEFERRED') AND is_deleted = 0`).run(content.title, content.summary, content.bodyMarkdown,
+        AND status IN ('PENDING','DEFERRED') AND is_deleted = 0`).run(content.title, content.summary, JSON.stringify(content.retrievalTerms), content.bodyMarkdown,
         changed ? 1 : 0, new Date().toISOString(), candidateId, version);
       if (result.changes !== 1) this.conflict();
     }

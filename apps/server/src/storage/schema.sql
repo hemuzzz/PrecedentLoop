@@ -1,5 +1,5 @@
 -- 正式知识：主库是内容的唯一原件，id 只用于显示编号。
-CREATE TABLE asset (
+CREATE TABLE IF NOT EXISTS asset (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   asset_id TEXT NOT NULL UNIQUE,
   asset_type TEXT NOT NULL CHECK (asset_type IN ('MEMORY','DOCUMENT','SKILL')), -- MEMORY-判断，DOCUMENT-参考，SKILL-流程
@@ -7,6 +7,7 @@ CREATE TABLE asset (
   workspace TEXT,
   title TEXT NOT NULL CHECK (length(trim(title)) > 0),
   summary TEXT NOT NULL CHECK (length(trim(summary)) > 0),
+  retrieval_terms TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(retrieval_terms)), -- 检索词：JSON 字符串数组
   body_markdown TEXT NOT NULL CHECK (length(trim(body_markdown)) > 0),
   version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
   previous_content TEXT CHECK (previous_content IS NULL OR json_valid(previous_content)),
@@ -17,10 +18,10 @@ CREATE TABLE asset (
 );
 
 -- 正式知识全文索引；仓储在内容事务内同步，关联仅使用业务主键。
-CREATE VIRTUAL TABLE asset_fts USING fts5(asset_id UNINDEXED, title, summary, body_markdown, tokenize='trigram');
+CREATE VIRTUAL TABLE IF NOT EXISTS asset_fts USING fts5(asset_id UNINDEXED, title, summary, retrieval_terms, body_markdown, tokenize='trigram');
 
 -- 待人工处理及已处理候选，与正式知识分开保存。
-CREATE TABLE asset_candidate (
+CREATE TABLE IF NOT EXISTS asset_candidate (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   candidate_id TEXT NOT NULL UNIQUE,
   asset_id TEXT NOT NULL,
@@ -30,6 +31,7 @@ CREATE TABLE asset_candidate (
   workspace TEXT,
   title TEXT NOT NULL CHECK (length(trim(title)) > 0),
   summary TEXT NOT NULL CHECK (length(trim(summary)) > 0),
+  retrieval_terms TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(retrieval_terms)), -- 检索词：JSON 字符串数组
   body_markdown TEXT NOT NULL CHECK (length(trim(body_markdown)) > 0),
   version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
   base_version INTEGER,
@@ -40,10 +42,10 @@ CREATE TABLE asset_candidate (
   CHECK ((asset_scope='GLOBAL' AND workspace IS NULL) OR (asset_scope='WORKSPACE' AND workspace IS NOT NULL)),
   CHECK ((intent='NEW' AND base_version IS NULL) OR (intent='REVISION' AND base_version IS NOT NULL))
 );
-CREATE UNIQUE INDEX asset_candidate_open ON asset_candidate(asset_id) WHERE status IN ('PENDING','DEFERRED') AND is_deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS asset_candidate_open ON asset_candidate(asset_id) WHERE status IN ('PENDING','DEFERRED') AND is_deleted = 0;
 
 -- 成功写入的幂等回执，和业务内容一起提交。
-CREATE TABLE write_operation (
+CREATE TABLE IF NOT EXISTS write_operation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id TEXT NOT NULL UNIQUE,
   operation TEXT NOT NULL CHECK (operation IN ('prepare','import','update','rewrite','defer','reject','accept','delete')), -- prepare-准备，import-导入，update-修改，rewrite-改稿，defer-暂存或取消，reject-拒绝，accept-接受，delete-删除知识
@@ -55,7 +57,7 @@ CREATE TABLE write_operation (
 );
 
 -- 已签发的持续工作区能力；撤销仅逻辑删除。
-CREATE TABLE workspace_capability (
+CREATE TABLE IF NOT EXISTS workspace_capability (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   capability_key_hash TEXT NOT NULL UNIQUE,
   workspace TEXT NOT NULL,
@@ -66,7 +68,7 @@ CREATE TABLE workspace_capability (
 );
 
 -- 每次召回的授权、表达、诊断与预算快照。
-CREATE TABLE recall_operation (
+CREATE TABLE IF NOT EXISTS recall_operation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   recall_id TEXT NOT NULL UNIQUE,
   authorized_workspaces_json TEXT NOT NULL CHECK (json_valid(authorized_workspaces_json)),
@@ -79,7 +81,7 @@ CREATE TABLE recall_operation (
 );
 
 -- 召回交付条目，不外键到可删除的知识。
-CREATE TABLE recall_item (
+CREATE TABLE IF NOT EXISTS recall_item (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   recall_item_id TEXT NOT NULL UNIQUE,
   recall_id TEXT NOT NULL REFERENCES recall_operation(recall_id),
@@ -97,10 +99,10 @@ CREATE TABLE recall_item (
   UNIQUE(recall_id,asset_id),
   UNIQUE(recall_id,ordinal)
 );
-CREATE INDEX recall_item_asset ON recall_item(asset_id);
+CREATE INDEX IF NOT EXISTS recall_item_asset ON recall_item(asset_id);
 
 -- 每次读取事实，保留原召回来源和读取时版本。
-CREATE TABLE read_operation (
+CREATE TABLE IF NOT EXISTS read_operation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   read_ref TEXT NOT NULL UNIQUE,
   authorized_workspaces_json TEXT NOT NULL CHECK (json_valid(authorized_workspaces_json)),
@@ -114,10 +116,10 @@ CREATE TABLE read_operation (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   CHECK ((asset_scope='GLOBAL' AND asset_workspace IS NULL) OR (asset_scope='WORKSPACE' AND asset_workspace IS NOT NULL))
 );
-CREATE INDEX read_operation_asset ON read_operation(asset_id);
+CREATE INDEX IF NOT EXISTS read_operation_asset ON read_operation(asset_id);
 
 -- 显式使用事实，来源幂等且不随知识删除而消失。
-CREATE TABLE used_event (
+CREATE TABLE IF NOT EXISTS used_event (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   used_id TEXT NOT NULL UNIQUE,
   authorized_workspaces_json TEXT NOT NULL CHECK (json_valid(authorized_workspaces_json)),
@@ -129,4 +131,43 @@ CREATE TABLE used_event (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   CHECK ((recall_item_id IS NULL) != (direct_read_ref IS NULL))
 );
-CREATE INDEX used_event_asset ON used_event(asset_id);
+CREATE INDEX IF NOT EXISTS used_event_asset ON used_event(asset_id);
+
+-- 待修订问题：使用时反馈的知识问题，经候选页处理；保留历史自测与引用核对问题。
+-- UNREACHABLE／BROKEN_REFERENCE／RETRIEVAL_CHECK／REFERENCE_CHECK 已停用，不再产生；保留原约束及 check_id 外键。
+CREATE TABLE IF NOT EXISTS asset_issue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id TEXT NOT NULL UNIQUE,
+  asset_id TEXT NOT NULL REFERENCES asset(asset_id),
+  asset_version INTEGER NOT NULL CHECK (asset_version >= 0), -- 报告时的知识版本
+  kind TEXT NOT NULL CHECK (kind IN ('OUTDATED','INACCURATE','INCOMPLETE','MISLEADING','MISSED','UNREACHABLE','BROKEN_REFERENCE')), -- OUTDATED-过时，INACCURATE-有误，INCOMPLETE-不完整，MISLEADING-标题摘要误导，MISSED-换说法才召回到，UNREACHABLE-自测未命中，BROKEN_REFERENCE-引用文件不存在
+  detail TEXT NOT NULL CHECK (length(trim(detail)) > 0),
+  evidence TEXT,
+  queries TEXT CHECK (queries IS NULL OR json_valid(queries)), -- 未命中的查询词或自测请求与查询词
+  source TEXT NOT NULL CHECK (source IN ('CODEX','CLAUDE','RETRIEVAL_CHECK','REFERENCE_CHECK')), -- CODEX-Codex 会话反馈，CLAUDE-Claude 会话反馈，RETRIEVAL_CHECK-召回自测，REFERENCE_CHECK-引用核对
+  session_id TEXT,
+  turn_id TEXT,
+  check_id TEXT REFERENCES retrieval_check(check_id),
+  status TEXT NOT NULL CHECK (status IN ('OPEN','DRAFTED','RESOLVED','DISMISSED')), -- OPEN-待处理，DRAFTED-已起草修订，RESOLVED-已随修订关闭，DISMISSED-已驳回
+  candidate_id TEXT REFERENCES asset_candidate(candidate_id),
+  is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0,1)), -- 0-未删除，1-已删除
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK ((source IN ('CODEX','CLAUDE')) = (session_id IS NOT NULL AND turn_id IS NOT NULL)),
+  CHECK ((source = 'RETRIEVAL_CHECK') = (check_id IS NOT NULL)),
+  CHECK (status <> 'DRAFTED' OR candidate_id IS NOT NULL)
+);
+
+-- 召回自测结果已停用、不再写入；保留表结构与历史数据，使新库与已有库一致。
+CREATE TABLE IF NOT EXISTS retrieval_check (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  check_id TEXT NOT NULL UNIQUE,
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('ASSET','CANDIDATE')), -- ASSET-正式知识，CANDIDATE-候选
+  target_id TEXT NOT NULL, -- asset_id 或 candidate_id
+  target_version INTEGER NOT NULL CHECK (target_version >= 0),
+  result TEXT NOT NULL CHECK (json_valid(result)), -- [{question, queries[], hit, rank}]
+  passed INTEGER NOT NULL CHECK (passed IN (0,1)), -- 0-有请求未命中，1-全部命中
+  is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0,1)), -- 0-未删除，1-已删除
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);

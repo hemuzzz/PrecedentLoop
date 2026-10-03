@@ -40,11 +40,11 @@ try {
       const schema=JSON.parse(fs.readFileSync(a[a.indexOf('--output-schema')+1],'utf8'));
       const result=schema.properties.candidates
         ? {schemaVersion:1,candidates:[],sourceResults:[{sourceKey:'0',explanation:'无独立增量',pendingRef:null}],warnings:[]}
-        : {schemaVersion:1,content:{title:'编译验证改稿',summary:'摘要',bodyMarkdown:'compiled-candidate-token'},explanation:'修改正文'};
+        : {schemaVersion:1,content:{title:'编译验证改稿',summary:'摘要',retrievalTerms:['候选写入','版本校验','隔离验证'],bodyMarkdown:'compiled-candidate-token'},explanation:'修改正文'};
       fs.writeFileSync(a[a.indexOf('--output-last-message')+1],JSON.stringify(result));}
   `, { mode: 0o700 });
   await writeFile(providerPath, JSON.stringify({ providers: [{ id: "codex", executable: mockCli, timeoutMs: 5000 }] }));
-  const prepared = await cli("asset/candidate-cli.js", ["prepare"], { requestId: "prepare", candidates: [{ title: "编译验证", summary: "摘要", bodyMarkdown: "原文", type: "MEMORY", target: { scope: "GLOBAL" } }] });
+  const prepared = await cli("asset/candidate-cli.js", ["prepare"], { requestId: "prepare", candidates: [{ title: "编译验证", summary: "摘要", retrievalTerms: ["候选写入", "版本校验", "隔离验证"], bodyMarkdown: "原文", type: "MEMORY", target: { scope: "GLOBAL" } }] });
   const item = prepared.data.candidates[0];
   const codexState = join(root, "codex-state.json");
   await writeFile(codexState, JSON.stringify({ "local-projects": { local: { name: "smoke-project", rootPaths: [root] } } }));

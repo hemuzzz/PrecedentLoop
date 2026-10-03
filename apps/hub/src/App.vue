@@ -137,7 +137,7 @@ onBeforeUnmount(() => {
     </aside>
     <div id="main-content" class="main-content" tabindex="-1">
       <IntegrationNotices />
-      <KeepAlive><component :is="view" ref="activeView" /></KeepAlive>
+      <KeepAlive><component :is="view" ref="activeView" @inbox-changed="refreshCounts" /></KeepAlive>
     </div>
   </div>
 </template>

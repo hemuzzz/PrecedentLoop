@@ -29,8 +29,8 @@ try {
   const { CandidateRepository } = await import(pathToFileURL(join(dist, "asset/candidate-repository.js")).href);
   const db = openDatabase(databasePath);
   try { const assets = new AssetRepository(db); new CandidateRepository(db).write("seed", "accept", "fixture", () => {
-    assets.insert({ assetId, type: "MEMORY", scope: "WORKSPACE", workspace: "alpha", title: "业务字典", summary: "字典配置位于 DictConfig。", bodyMarkdown: "# 业务字典\n\n隔离构建验收正文。Native Memories 与 KNOWLEDGE.md。" });
-    assets.insert({ assetId: "ast2034512345678901249", type: "MEMORY", scope: "WORKSPACE", workspace: "alpha", title: "Native tooling and unrelated Memories", summary: "KNOWLEDGEXmd", bodyMarkdown: "干扰样本。" });
+    assets.insert({ assetId, type: "MEMORY", scope: "WORKSPACE", workspace: "alpha", title: "业务字典", summary: "字典配置位于 DictConfig。", retrievalTerms: [], bodyMarkdown: "# 业务字典\n\n隔离构建验收正文。Native Memories 与 KNOWLEDGE.md。" });
+    assets.insert({ assetId: "ast2034512345678901249", type: "MEMORY", scope: "WORKSPACE", workspace: "alpha", title: "Native tooling and unrelated Memories", summary: "KNOWLEDGEXmd", retrievalTerms: [], bodyMarkdown: "干扰样本。" });
     return {};
   }); } finally { db.close(); }
   const context = await handleCodexHook({ hook_event_name: "UserPromptSubmit", cwd: directory },
@@ -64,7 +64,7 @@ try {
     { capabilityIds: [capability], queries: ["Native Memories", "字典", "KNOWLEDGE.md"] } }));
   assert.equal(recalled.items.length, 1);
   assert.equal(recalled.items[0].assetId, assetId);
-  assert.equal(recalled.items[0].deliveredMode, "DIRECT");
+  assert.equal(typeof recalled.items[0].summary, "string");
   assert.ok(Array.from(JSON.stringify(recalled)).length <= 5000);
   const read = parse(await client.callTool({ name: "asset_read", arguments:
     { capabilityIds: [capability], recallItemId: recalled.items[0].recallItemId } }));
@@ -72,7 +72,9 @@ try {
   const usedArgs = { capabilityIds: [capability], readRef: read.readRef };
   assert.equal(parse(await client.callTool({ name: "asset_mark_used", arguments: usedArgs })).created, true);
   assert.equal(parse(await client.callTool({ name: "asset_mark_used", arguments: usedArgs })).created, false);
-  const history = await get(`/api/recalls/${recalled.recallId}`);
+  const recallId = (await get("/api/recalls")).items[0].recallId;
+  const history = await get(`/api/recalls/${recallId}`);
+  assert.equal(history.items[0].deliveredMode, "DIRECT");
   assert.deepEqual(history.operation.queries, ["Native Memories", "字典", "KNOWLEDGE.md"]);
   assert.equal(history.items[0].readCount, 1); assert.equal(history.items[0].totalUsedCount, 1);
   const workspaces = await get("/api/workspaces");
@@ -86,7 +88,7 @@ try {
   assert.equal((await fetch(base + "/api/scenarios")).status, 404);
   assert.equal((await fetch(base + "/api/recalls", { method: "POST" })).status, 405);
   assert.equal((await fetch(base + "/api/recalls", { headers: { origin: "https://invalid.example" } })).status, 403);
-  console.log(JSON.stringify({ status: "PASS", url: base, assetId, recallId: recalled.recallId,
+  console.log(JSON.stringify({ status: "PASS", url: base, assetId, recallId,
     checks: ["Hub static serving", "HTTP MCP literal phrase/filename/short expression", "Recall/Read/Used", "REST projections", "method/origin boundary"],
     isolated: true, realDesktopAcceptance: false }));
   if (process.env.PRECEDENT_LOOP_SMOKE_KEEP_OPEN === "1") {

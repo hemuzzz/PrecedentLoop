@@ -15,7 +15,7 @@ export function checkRelatedAssets(related: Array<{ assetId: string; relation: s
     return { ...item, title: asset.title };
   });
 }
-export function checkStructuredContent(input: (StructuredContent & { related?: Array<{ assetId: string; relation: string }> | undefined }) | { title: string; summary: string; bodyMarkdown: string }): void {
+export function checkStructuredContent(input: (StructuredContent & { related?: Array<{ assetId: string; relation: string }> | undefined }) | { title: string; summary: string; bodyMarkdown: string; retrievalTerms?: string[] } | { retrievalTerms: string[] }): void {
   const secrets = /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----|\bAKIA[A-Z0-9]{16}\b|\b(?:ghp_|github_pat_)[A-Za-z0-9_]+|\bsk-(?:ant-)?[A-Za-z0-9_-]{10,}|\bxox[abpr]-[A-Za-z0-9-]+|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/iu;
   const credentialAssignments = /\b(?:password|secret|token)["']?\s*[:=]\s*(["'])([^\r\n]*?)\1|\b(?:password|secret|token)\s*=\s*([^\s"',;}{]+)/giu;
   const scan = (value: unknown, field: string): void => {
@@ -33,7 +33,7 @@ export function checkStructuredContent(input: (StructuredContent & { related?: A
     else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) scan(item, field ? `${field}.${key}` : key);
   };
   scan(input, "");
-  const core = !("type" in input) ? { bodyMarkdown: input.bodyMarkdown }
+  const core = !("type" in input) ? { bodyMarkdown: "bodyMarkdown" in input ? input.bodyMarkdown : undefined }
     : input.type === "MEMORY" ? { conclusion: input.conclusion, reasons: input.reasons }
     : input.type === "SKILL" ? { steps: input.steps } : { purpose: input.purpose };
   for (const [field, value] of Object.entries(core)) {

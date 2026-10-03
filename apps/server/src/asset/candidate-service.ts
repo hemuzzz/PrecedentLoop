@@ -3,10 +3,13 @@ import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import { z } from "zod";
 import { openDatabase } from "../storage/schema.js";
 import { loadWorkspaceConfig, loadWorkspaceConfigSync } from "../workspace/config.js";
-import { assetIdSchema, candidateIdSchema, assetTypeSchema, type AssetScope } from "./schema.js";
+import { assetIdSchema, candidateIdSchema, assetTypeSchema, retrievalTermsSchema, type AssetScope } from "./schema.js";
+import { checkStructuredContent } from "./structured-candidate-checks.js";
 import { AssetRepository, type AssetRecord } from "./asset-repository.js";
 import { CandidateRepository, type CandidateRecord, type WriteOperation } from "./candidate-repository.js";
 import { RepositoryOperationError } from "./errors.js";
+import { IssueRepository, type AssetIssue } from "./issue-repository.js";
+import type { IssueDraft } from "./issue-service.js";
 
 export const requestIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/u);
 export const versionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -16,7 +19,7 @@ export const candidateTargetSchema = z.discriminatedUnion("scope", [
 ]);
 export type CandidateTarget = z.infer<typeof candidateTargetSchema>;
 const unicodeText = z.string().trim().refine(value => !/[\u0000\uD800-\uDFFF]/u.test(value), "内容必须是有效文本");
-export const contentFieldsSchema = z.object({ title: unicodeText.min(1).max(300), summary: unicodeText.min(1).max(4000), bodyMarkdown: unicodeText.min(1).max(256_000) }).strict()
+export const contentFieldsSchema = z.object({ title: unicodeText.min(1).max(300), summary: unicodeText.min(1).max(4000), retrievalTerms: retrievalTermsSchema, bodyMarkdown: unicodeText.min(1).max(256_000) }).strict()
   .refine(value => Buffer.byteLength(value.bodyMarkdown) <= 256_000, "候选超过 256000 字节限制");
 export const prepareItemSchema = contentFieldsSchema.safeExtend({ type: assetTypeSchema, target: candidateTargetSchema,
   existingAssetId: assetIdSchema.optional(), baseVersion: versionSchema.optional() }).strict()
@@ -28,7 +31,7 @@ export type PrepareItem = z.infer<typeof prepareItemSchema>;
 export type CandidateSelection = z.infer<typeof candidateSelectionSchema>;
 export interface CandidateSummary { candidateId: string; number: number; assetId: string; version: number; intent: "NEW" | "REVISION" }
 export interface CandidateBatchResult { candidates: CandidateSummary[]; count: number; warnings: string[]; sourceResults: unknown[] }
-export type ManagedInboxItem = CandidateRecord & { knowledgeNumber: number | null; baselineMarkdown?: string; currentFormalVersion?: number };
+export type ManagedInboxItem = CandidateRecord & { knowledgeNumber: number | null; baselineMarkdown?: string; currentFormalVersion?: number; issues: AssetIssue[] };
 export interface CandidateOptions { databasePath: string; workspaceConfigPath: string }
 
 export class CandidateService {
@@ -38,13 +41,15 @@ export class CandidateService {
   async list(bucket?: "PENDING" | "DEFERRED") {
     const config = await loadWorkspaceConfig(this.options.workspaceConfigPath);
     return this.read((repository, assets) => {
+      const cards = new IssueRepository(repository.database).cards().filter(row => row.scope === "GLOBAL" || config.workspaces.some(workspace => workspace.name === row.workspace));
       const items: ManagedInboxItem[] = repository.list().filter(row => (!bucket || row.status === bucket) &&
         (row.scope === "GLOBAL" || config.workspaces.some(workspace => workspace.name === row.workspace))).map(row => {
         const formal = assets.get(row.assetId);
-        return { ...row, knowledgeNumber: formal?.knowledgeNumber ?? null,
+        return { ...row, knowledgeNumber: formal?.knowledgeNumber ?? null, issues: cards.find(card => card.assetId === row.assetId)?.issues ?? [],
           ...(formal ? { baselineMarkdown: displayContent(formal), currentFormalVersion: formal.version } : {}) };
       });
-      return { items, diagnostics: [], managed: true };
+      return { items, issueCards: cards.filter(card => !repository.byAsset(card.assetId)),
+        diagnostics: [], managed: true };
     });
   }
   async pendingCandidates(): Promise<Array<{ record: CandidateRecord }>> {
@@ -60,13 +65,20 @@ export class CandidateService {
     warnings?: string[]; sourceResults?: unknown[]; requestInput?: unknown; operation?: "prepare" | "import";
     beforeWrite?: (repository: CandidateRepository, assets: AssetRepository) => unknown;
     itemWarning?: (index: number, assets: AssetRepository) => string | undefined;
+    issueDraft?: IssueDraft;
   } = {}) {
     requestIdSchema.parse(requestId);
     const items = z.array(prepareItemSchema).max(32).parse(rawItems);
+    for (const item of items) checkStructuredContent({ retrievalTerms: item.retrievalTerms });
     await this.validateTargets(items.map(item => item.target));
     const operation = details.operation ?? (details.requestInput === undefined ? "prepare" : "import");
     return this.write(requestId, operation, details.requestInput ?? { items, details }, (repository, assets): CandidateBatchResult | RevisionBlocked | ReviewRequired => {
       this.validateTargetsAtCommit(items.map(item => item.target));
+      if (details.issueDraft) {
+        const draft = details.issueDraft;
+        if (items.length !== 1 || items[0]!.existingAssetId !== draft.assetId || assets.get(draft.assetId)?.version !== draft.assetVersion || repository.byAsset(draft.assetId))
+          throw new RepositoryOperationError("VERSION_CONFLICT", "知识或候选已变化，请重新起草修订");
+      }
       const decision = details.beforeWrite?.(repository, assets);
       if (decision) return decision as ReviewRequired;
       const warnings = [...(details.warnings ?? [])];
@@ -88,10 +100,11 @@ export class CandidateService {
         candidates.push(summary(repository.insert({ candidateId: this.#ids.next("cnd"),
           assetId: current?.assetId ?? this.#ids.next("ast"), intent: current ? "REVISION" : "NEW",
           type: item.type, scope: item.target.scope, workspace: item.target.scope === "GLOBAL" ? null : item.target.workspace,
-          title: item.title, summary: item.summary, bodyMarkdown: item.bodyMarkdown, baseVersion: item.baseVersion ?? null })));
+          title: item.title, summary: item.summary, retrievalTerms: item.retrievalTerms, bodyMarkdown: item.bodyMarkdown, baseVersion: item.baseVersion ?? null })));
       }
-      return { candidates, count: candidates.length, warnings, sourceResults: details.sourceResults ?? [] };
-    });
+      if (details.issueDraft) new IssueRepository(repository.database).draft(details.issueDraft.assetId, details.issueDraft.issueIds, candidates[0]!.candidateId);
+      return { candidates, count: candidates.length, warnings, sourceResults: details.sourceResults ?? [], ...(details.issueDraft ? { operation: "draft-revision", explanation: details.issueDraft.explanation } : {}) };
+    }, details.issueDraft?.requestHash);
   }
   async defer(rawInput: unknown) {
     const input = deferCandidateSchema.parse(rawInput);
@@ -104,7 +117,8 @@ export class CandidateService {
   async reject(rawInput: unknown) {
     const input = candidateSelectionSchema.parse(rawInput);
     return this.write(input.requestId, "reject", input, repository => {
-      this.selected(repository, input); repository.setStatus(input.candidateId, input.candidateVersion, "REJECTED");
+      const row = this.selected(repository, input); repository.setStatus(input.candidateId, input.candidateVersion, "REJECTED");
+      if (row.intent === "REVISION") new IssueRepository(repository.database).reopen(row.assetId, row.candidateId);
       return { rejected: true, candidateId: input.candidateId };
     });
   }
@@ -117,6 +131,7 @@ export class CandidateService {
       if (row.baseVersion !== (input.baseVersion ?? null)) throw new RepositoryOperationError("VERSION_CONFLICT", "修订基线版本不一致");
       const asset = row.intent === "NEW" ? assets.insert(row) : assets.revise(row.assetId, row.baseVersion!, row);
       repository.setStatus(row.candidateId, row.version, "ACCEPTED");
+      if (row.intent === "REVISION") new IssueRepository(repository.database).resolve(row.assetId);
       return { assetId: asset.assetId, version: asset.version, candidateId: row.candidateId, knowledgeNumber: asset.knowledgeNumber, status: "ACCEPTED" as const };
     });
   }
@@ -124,15 +139,19 @@ export class CandidateService {
     const input = z.object({ requestId: requestIdSchema, assetId: assetIdSchema }).strict().parse(rawInput);
     return this.write(input.requestId, "delete", input, (_repository, assets) => { assets.delete(input.assetId); return { assetId: input.assetId, deleted: true }; });
   }
-  async rewrite(input: CandidateSelection, fields: z.infer<typeof contentFieldsSchema>, requestInput?: unknown, operation: "rewrite" | "update" = "rewrite") {
+  async rewrite(input: CandidateSelection, fields: z.infer<typeof contentFieldsSchema>, requestInput?: unknown, operation: "rewrite" | "update" = "rewrite", issueDraft?: IssueDraft) {
     fields = contentFieldsSchema.parse(fields);
+    checkStructuredContent({ retrievalTerms: fields.retrievalTerms });
     return this.write(input.requestId, operation, requestInput ?? { ...input, fields }, (repository, assets) => {
       const row = this.selected(repository, input);
       this.validateTargetsAtCommit([targetOf(row)]);
       this.validateRevision(assets, row);
+      if (issueDraft && (row.assetId !== issueDraft.assetId || assets.get(row.assetId)?.version !== issueDraft.assetVersion))
+        throw new RepositoryOperationError("VERSION_CONFLICT", "知识已变化，请重新起草修订");
       const next = repository.updateContent(row.candidateId, row.version, fields);
-      return { ...summary(next), changed: next.version !== row.version };
-    });
+      if (issueDraft) new IssueRepository(repository.database).draft(row.assetId, issueDraft.issueIds, row.candidateId);
+      return { ...summary(next), changed: next.version !== row.version, ...(issueDraft ? { operation: "draft-revision", explanation: issueDraft.explanation } : {}) };
+    }, issueDraft?.requestHash);
   }
   async rewriteInput(input: CandidateSelection) {
     return this.read((repository, assets) => {
@@ -166,9 +185,9 @@ export class CandidateService {
     for (const target of targets) if (target.scope === "WORKSPACE" && !config.workspaces.some(workspace => workspace.name === target.workspace))
       throw new RepositoryOperationError("TARGET_INVALID", "目标工作区未配置");
   }
-  private write<T>(requestId: string, operation: WriteOperation, input: unknown, fn: (repository: CandidateRepository, assets: AssetRepository) => T): T {
+  private write<T>(requestId: string, operation: WriteOperation, input: unknown, fn: (repository: CandidateRepository, assets: AssetRepository) => T, requestHash?: string): T {
     const db = openDatabase(this.options.databasePath);
-    try { const repository = new CandidateRepository(db); return repository.write(requestId, operation, inputHash({ operation, input }), () => fn(repository, new AssetRepository(db))); }
+    try { const repository = new CandidateRepository(db); return repository.write(requestId, operation, requestHash ?? inputHash({ operation, input }), () => fn(repository, new AssetRepository(db))); }
     finally { db.close(); }
   }
   private selected(repository: CandidateRepository, input: CandidateSelection): CandidateRecord {
@@ -188,7 +207,7 @@ export class CandidateService {
 export interface ReviewRequired { status: "REVIEW_REQUIRED"; instruction: string; pendingCandidates: Array<{
   candidateId: string; number: number; assetId: string; type: "MEMORY" | "DOCUMENT" | "SKILL";
   scope: AssetScope; workspace: string | null; status: string; title: string; summary: string;
-  bodyOmitted?: true; bodyMarkdown?: string; candidateVersion?: number;
+  bodyOmitted?: true; bodyMarkdown?: string; retrievalTerms?: string[]; candidateVersion?: number;
 }>; omittedBodies: number }
 export function revisionBlocked(asset: AssetRecord, candidate: CandidateRecord) {
   return { status: "REVISION_BLOCKED" as const, assetId: asset.assetId, assetTitle: asset.title,
@@ -202,12 +221,12 @@ function summary(row: CandidateRecord): CandidateSummary { return { candidateId:
 export function matchesTarget(asset: { scope: AssetScope; workspace?: string | null }, target: CandidateTarget): boolean {
   return asset.scope === target.scope && (target.scope === "GLOBAL" || asset.workspace === target.workspace);
 }
-export function displayContent(content: { title: string; summary: string; bodyMarkdown: string }): string {
+export function displayContent(content: { title: string; summary: string; bodyMarkdown: string; retrievalTerms?: string[] }): string {
   const heading = `# ${content.title}`;
   const firstLine = /^([^\r\n]*)(?:\r\n|\r|\n|$)/u.exec(content.bodyMarkdown)!;
   const body = firstLine[1] === heading
     ? content.bodyMarkdown.slice(firstLine[0].length).replace(/^(?:\r\n|\r|\n)+/u, "") : content.bodyMarkdown;
-  return `${heading}\n\n${content.summary}\n\n${body}`;
+  return `${heading}\n\n${content.summary}\n\n检索词：${JSON.stringify(content.retrievalTerms ?? [])}\n\n${body}`;
 }
 export function inputHash(input: unknown): string {
   const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable)

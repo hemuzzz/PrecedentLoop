@@ -16,7 +16,7 @@ export async function settingsData(): Promise<SettingsApi> {
     if (mock) return mock;
   }
   return {
-    storage: async () => { const inbox = await api.getInbox(); return { managed: inbox.managed === true, pending: inbox.items.filter(item => item.reviewBucket !== "DEFERRED").length }; },
+    storage: async () => { const inbox = await api.getInbox(); return { managed: inbox.managed === true, pending: inbox.items.filter(item => item.status === "PENDING").length }; },
     workspaces: async () => (await api.getWorkspaces()).items,
     aiSettings: () => api.aiSettings(), testAi: provider => api.testAi(provider),
   };

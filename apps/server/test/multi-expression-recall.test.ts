@@ -10,7 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { SnowflakeIdGenerator } from "@precedent-loop/id-generator";
 import { knowledgeFixture } from "../test-support/knowledge-fixture.js";
 import { compareRankedItems, type RankedSearchItem } from "../src/asset/search.js";
-import { KnowledgeError, type RecallResult } from "../src/knowledge/model.js";
+import { KnowledgeError, type RecallResponse } from "../src/knowledge/model.js";
 import { KnowledgeProjection } from "../src/knowledge/projection.js";
 import { KnowledgeRepository } from "../src/knowledge/repository.js";
 import { KnowledgeService } from "../src/knowledge/service.js";
@@ -21,10 +21,9 @@ import { handleCodexHook } from "../src/hook/user-prompt-submit.js";
 
 const ids = new SnowflakeIdGenerator();
 const rejectsWith = (code: string) => (error: unknown) => error instanceof KnowledgeError && error.code === code;
-function assertBudget(result: RecallResult): void {
-  assert.equal(result.budget.modelVisibleCharacters, Array.from(JSON.stringify(result)).length);
-  assert.equal(result.budget.metadataCharacters + result.budget.knowledgeContentCharacters, result.budget.modelVisibleCharacters);
-  assert.ok(result.budget.modelVisibleCharacters <= 5000);
+function assertBudget(result: RecallResponse): void {
+  assert.ok(Array.from(JSON.stringify(result)).length <= 5000);
+  assert.deepEqual(Object.keys(result.budget).sort(), ["downgradedCount", "omittedCount"]);
   assert.ok(result.items.length <= 8);
 }
 
@@ -43,7 +42,8 @@ test("usage and recall projections resolve current titles without dropping unava
   const asset = await f.asset("使用记录标题");
 
   const recall = await f.service.recall({ capabilityIds: [f.alpha], queries: ["使用记录标题"] });
-  const initialRecall = (await f.projection.recall(recall.recallId!))!;
+  const recallId = f.repository.item(recall.items[0]!.recallItemId!)!.recallId;
+  const initialRecall = (await f.projection.recall(recallId))!;
   assert.equal(initialRecall.items.length, 1);
   assert.equal(initialRecall.items[0]!.assetTitle, "使用记录标题");
   const read = await f.service.read({ capabilityIds: [f.alpha], assetId: asset.assetId });
@@ -56,19 +56,19 @@ test("usage and recall projections resolve current titles without dropping unava
   assert.equal((await f.projection.usage(2, 1)).items.length, 0);
   f.revise(asset.assetId, { title: "更新后的标题" });
   const renamed = await f.projection.usage(0, 20, asset.assetId);
-  const renamedRecall = (await f.projection.recall(recall.recallId!))!;
+  const renamedRecall = (await f.projection.recall(recallId))!;
   assert.equal(renamedRecall.items[0]!.assetTitle, "更新后的标题");
   assert.deepEqual({ ...renamedRecall.items[0], assetTitle: "使用记录标题" }, initialRecall.items[0]);
   assert.ok(renamed.items.every(item => item.assetTitle === "更新后的标题"));
   assert.deepEqual(renamed.items.map(item => item.version), initial.items.map(item => item.version));
   f.remove(asset.assetId);
-  const invalidRecall = (await f.projection.recall(recall.recallId!))!;
+  const invalidRecall = (await f.projection.recall(recallId))!;
   assert.equal(invalidRecall.items[0]!.assetTitle, null);
   const removed = await f.projection.usage();
   assert.equal(removed.total, 2);
   assert.ok(removed.items.every(item => item.assetTitle === null));
   assert.deepEqual(removed.items.map(item => item.id), initial.items.map(item => item.id));
-  const removedRecall = (await f.projection.recall(recall.recallId!))!;
+  const removedRecall = (await f.projection.recall(recallId))!;
   assert.deepEqual({ ...removedRecall.items[0], assetTitle: "使用记录标题" }, initialRecall.items[0]);
   assert.equal(removedRecall.items[0]!.assetTitle, null);
   assert.deepEqual(removedRecall.operation, initialRecall.operation);
@@ -84,20 +84,20 @@ test("OR expressions expand aliases while literal phrases, scope, and exact Chin
 
   const input = { capabilityIds: [f.alpha], queries: ["业务字典", "  DictConfig  ", "dictconfig", "字典配置", "sys_dict"] };
   const result = await f.service.recall(input);
-  assert.deepEqual(result.queries, ["业务字典", "DictConfig", "字典配置", "sys_dict"]);
+  const expectedQueries = ["业务字典", "DictConfig", "字典配置", "sys_dict"];
   assert.deepEqual(new Set(result.items.map(i => i.assetId)), new Set([dict.assetId, config.assetId, table.assetId]));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(f.projection.totals().recallOperations, 1);
   assert.equal(f.projection.totals().recallItems, 3);
-  assert.deepEqual((await f.projection.recall(result.recallId!))!.operation.queries, result.queries);
   const row = f.projection.recalls().items[0]!;
-  assert.deepEqual(row.queries, result.queries);
+  assert.deepEqual((await f.projection.recall(row.recallId))!.operation.queries, expectedQueries);
+  assert.deepEqual(row.queries, expectedQueries);
   assert.equal("query" in row || "queriesJson" in row, false);
   assertBudget(result);
   const global = await f.service.recall({ ...input, capabilityIds: [] });
   assert.deepEqual(global.items.map(i => i.assetId), [table.assetId]);
   const phrases = await f.service.recall({ capabilityIds: [f.alpha], queries: ["业务字典 DictConfig", "DictConfig   字典配置", "dictconfig 字典配置"] });
-  assert.deepEqual(phrases.queries, ["业务字典 DictConfig", "DictConfig   字典配置", "dictconfig 字典配置"]);
+  assert.deepEqual(f.projection.recalls().items[0]!.queries, ["业务字典 DictConfig", "DictConfig   字典配置", "dictconfig 字典配置"]);
   assert.deepEqual(phrases.items.map(i => i.assetId), [config.assetId]);
   assert.equal((await f.service.recall({ capabilityIds: [f.alpha], queries: ["业务字典|sys_dict"] })).items.length, 0);
 });
@@ -127,8 +127,9 @@ test("Recall keeps spaces, punctuation and short expressions literal, even along
   assert.deepEqual(new Set(result.items.map(i => i.assetId)), new Set([phrase.assetId, short.assetId, filename.assetId, identifier.assetId]));
   assertBudget(result);
   const normalized = await f.service.recall({ capabilityIds: [f.alpha], queries: [" Native Memories ", "native memories", "Native  Memories"] });
-  assert.deepEqual(normalized.queries, ["Native Memories", "Native  Memories"]);
-  assert.deepEqual((await f.projection.recall(normalized.recallId!))!.operation.queries, normalized.queries);
+  const normalizedFact = f.projection.recalls().items[0]!;
+  assert.deepEqual(normalizedFact.queries, ["Native Memories", "Native  Memories"]);
+  assert.deepEqual((await f.projection.recall(normalizedFact.recallId))!.operation.queries, normalizedFact.queries);
   // The human library's existing word search is a separate contract.
   assert.ok((await f.search.listLibrary({ query: "Native Memories", workspace: "alpha" })).items.length > normalized.items.length);
 });
@@ -223,7 +224,7 @@ test("strict input rejects old query, empty/oversized arrays, control characters
   ]) await assert.rejects(f.service.recall(input), rejectsWith("INPUT_INVALID"));
   assert.equal(f.projection.totals().recallOperations, 0);
   const result = await f.service.recall({ ...base, queries: Array.from({ length: 8 }, (_, i) => `${i}${'"'.repeat(255)}`) });
-  assert.equal(result.queries.length, 8);
+  assert.equal(f.projection.recalls().items[0]!.queries.length, 8);
   assertBudget(result);
 });
 
@@ -261,15 +262,16 @@ test("large expression metadata and summaries stay within the shared budget, inc
   const input = { capabilityIds: [f.alpha], queries: ["dictionary", ...Array.from({ length: 7 }, (_, i) => `${i}${'"'.repeat(255)}`)] };
   const result = await f.service.recall(input);
   assertBudget(result);
-  assert.ok(result.diagnostics.includes("CHARACTER_LIMIT"));
+  assert.ok(!result.diagnostics.includes("CHARACTER_LIMIT"));
   assert.ok(result.diagnostics.includes("BUDGET_DOWNGRADED"));
-  assert.ok(result.items.length > 0 && result.items.length < 8);
+  assert.equal(result.items.length, 8);
   const totals = f.projection.totals();
   f.repository.db.exec("CREATE TRIGGER fail_recall_item BEFORE INSERT ON recall_item BEGIN SELECT RAISE(ABORT, 'fixture'); END");
   const failed = await f.service.recall(input);
   assertBudget(failed);
-  assert.equal(failed.usageRecorded, false); assert.equal(failed.recallId, null);
-  assert.ok(failed.items.every(i => i.recallItemId === null && i.reference.includes("expectedVersion")));
+  assert.equal(failed.usageRecorded, false); assert.equal("recallId" in failed, false);
+  assert.ok(failed.items.every(i => i.recallItemId === null));
+  assert.equal(failed.reference, "asset_read: assetId + expectedVersion=version + same capabilityIds");
   assert.ok(failed.diagnostics.includes("USAGE_WRITE_FAILED"));
   assert.deepEqual(f.projection.totals(), totals);
   f.repository.db.exec("DROP TRIGGER fail_recall_item");
@@ -318,7 +320,7 @@ test("MCP publishes an object-root queries array and returns one serialized resu
   assert.ok(Array.isArray(response.content)); assert.equal(response.content.length, 1);
   const block = response.content[0] as { type: string; text: string };
   assert.equal(block.type, "text");
-  const result = JSON.parse(block.text) as RecallResult;
+  const result = JSON.parse(block.text) as RecallResponse;
   assert.deepEqual(result.items.map(i => i.assetId), [asset.assetId]); assertBudget(result);
   const rejected = await client.callTool({ name: "knowledge_recall", arguments: { capabilityIds: [f.alpha], query: "dictconfig" } });
   assert.equal(rejected.isError, true);

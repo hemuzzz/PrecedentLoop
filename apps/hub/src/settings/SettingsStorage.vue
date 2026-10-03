@@ -41,7 +41,7 @@ onMounted(async () => {
   <section class="settings-section"><div class="settings-section-heading"><h2>数据目录</h2><button class="setup-link" :disabled="!bridge" @click="reveal">在 Finder 中显示</button></div><div class="settings-cli"><code>{{ local?.dataDirectory ?? '请在桌面应用中查看本机路径' }}</code></div><p class="setup-help">知识原件、索引与工作区配置保存在此目录。</p>
     <div class="setup-actions"><button class="setup-button" :disabled="!bridge || busy" @click="open('migrate')">迁移到新位置…</button><button class="setup-button" :disabled="!bridge || busy" @click="open('associate')">关联其他数据目录…</button></div>
     <p class="setup-help">迁移会保留旧目录；关联只切换正在使用的知识库。</p></section>
-  <section class="settings-section"><div class="settings-field"><h2>存储版本</h2><span>{{ local?.storageVersion ?? '未读取' }}</span></div><div class="settings-field"><h2>候选存储</h2><span class="setup-status" :class="storage?.managed ? 'ok' : 'neutral'">{{ storage ? storage.managed ? '已就绪' : '尚未就绪' : '正在读取…' }}</span></div><div class="settings-field"><h2>待处理候选</h2><span>{{ storage?.pending ?? '—' }} 项</span></div></section>
+  <section class="settings-section"><div class="settings-field"><h2>候选存储</h2><span class="setup-status" :class="storage?.managed ? 'ok' : 'neutral'">{{ storage ? storage.managed ? '已就绪' : '尚未就绪' : '正在读取…' }}</span></div><div class="settings-field"><h2>待处理候选</h2><span>{{ storage?.pending ?? '—' }} 项</span></div></section>
   <details class="settings-details"><summary>高级详情</summary><dl v-if="local"><template v-for="row in [{ label: 'Runtime 数据库', path: local.paths.databasePath }, { label: '工作区配置 workspaces.json', path: local.paths.workspaceConfigPath }, { label: '日志', path: local.paths.logPath.replace(/\/[^/]+$/, '') }]" :key="row.label"><dt>{{ row.label }}</dt><dd><code>{{ row.path }}</code></dd></template></dl></details>
 
   <SettingsDialog :open="moving !== null" :title="moving ? titles[moving] : ''" :busy="busy" @close="close">
@@ -55,7 +55,7 @@ onMounted(async () => {
     <template v-else-if="moving === 'associate'">
       <p class="setup-help">切换到已有知识库，不合并两个知识库。</p>
       <div class="settings-field"><span>已有数据目录</span><code v-if="plan">{{ plan.to }}</code><span v-else class="setup-help">尚未选择</span><button class="setup-button" :disabled="busy" @click="choose">选择已有数据目录…</button></div>
-      <p v-if="plan?.planId" class="setup-help">找到已有知识库：正式知识 {{ plan.statistics.assets ?? '—' }} 条、候选 {{ plan.statistics.candidates ?? '—' }} 条。</p>
+      <p v-if="plan?.planId" class="setup-help">找到已有知识库：已登记工作区 {{ plan.statistics.workspaces ?? '—' }} 个。</p>
       <p class="setup-help">将停止当前服务，切换数据目录并重新启动。当前知识库文件会保留在原位置。</p>
     </template>
     <p v-if="plan?.reason" class="setup-notice error" role="alert">{{ plan.reason }}</p>

@@ -3,22 +3,24 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { dataPaths, inspectNode, verifyBundledNode } from "../src/config.js";
-import { DataDirectoryError, ensureMarker, initializeDataDirectory, inspectDataDirectory, readStorageVersion } from "../src/data-directory.js";
+import { DataDirectoryError, ensureMarker, initializeDataDirectory, inspectDataDirectory, prepareDirectoryLayout, readSchemaCookie } from "../src/data-directory.js";
 import { fixtureExecutor } from "./executor-fixture.js";
 
-function header(version: number): Buffer {
+function header(schemaCookie: number, userVersion = 0): Buffer {
   const bytes = Buffer.alloc(100);
-  bytes.write("SQLite format 3\0"); bytes.writeUInt32BE(version, 60);
+  bytes.write("SQLite format 3\0"); bytes.writeUInt32BE(schemaCookie, 40); bytes.writeUInt32BE(userVersion, 60);
   return bytes;
 }
-async function product(path: string, version = 2): Promise<void> {
+async function product(path: string, schemaCookie = 1): Promise<void> {
   await mkdir(join(path, "runtime"), { recursive: true });
-  await writeFile(dataPaths(path).databasePath, header(version));
+  await writeFile(dataPaths(path).databasePath, header(schemaCookie));
   try { await writeFile(join(path, ".precedentloop.json"), JSON.stringify({ formatVersion: 1, createdAt: new Date().toISOString(), dataId: randomUUID() }), { flag: "wx" }); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
 }
-async function fakeRuntime(root: string, fail = ""): Promise<string> {
+async function fakeRuntime(root: string, fail = "", schemaCookie = 1): Promise<string> {
   const runtime = join(root, "PrecedentLoop-Test-data.app/Contents/Resources/runtime");
   const helper = await fixtureExecutor(runtime);
   await writeFile(join(runtime, "build-info.json"), JSON.stringify({ buildId: randomUUID(), ...await inspectNode(helper) }));
@@ -33,7 +35,7 @@ async function fakeRuntime(root: string, fail = ""): Promise<string> {
     fs.appendFileSync('commands.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');
     if (command === ${JSON.stringify(fail)}) { console.error('fixture initialization failed'); process.exit(3); }
     const header = Buffer.alloc(100); header.write('SQLite format 3\\0');
-    header.writeUInt32BE(2, 60);
+    header.writeUInt32BE(${schemaCookie}, 40);
     fs.writeFileSync(process.env.PRECEDENT_LOOP_DATABASE_PATH, header);
   `);
   return runtime;
@@ -51,20 +53,25 @@ test("directory inspection is read-only and classifies missing, empty, unrelated
     await writeFile(join(path, "mine.txt"), "preserve");
     assert.deepEqual(await inspectDataDirectory(path), { kind: "OTHER_NON_EMPTY" });
     await product(path);
-    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 2 });
+    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT" });
     assert.equal(await readFile(join(path, "mine.txt"), "utf8"), "preserve");
     assert.ok(await readFile(join(path, ".precedentloop.json")));
-    for (const version of [0, 1, 2, 4, 5, 6, 7, 256, 0xffffffff]) {
-      await writeFile(dataPaths(path).databasePath, header(version));
-      const inspection = await inspectDataDirectory(path);
-      assert.equal(inspection.kind, version === 2 ? "PRODUCT" : version === 0 ? "PRODUCT_INCOMPLETE" : "PRODUCT_UNSUPPORTED");
-      assert.ok("storageVersion" in inspection && inspection.storageVersion === version);
+    for (const schemaCookie of [0, 1, 2, 4, 256, 0xffffffff]) {
+      for (const userVersion of [0, 1, 2, 7, 0xffffffff]) {
+        await writeFile(dataPaths(path).databasePath, header(schemaCookie, userVersion));
+        assert.equal(await readSchemaCookie(dataPaths(path).databasePath), schemaCookie);
+        assert.deepEqual(await inspectDataDirectory(path), { kind: schemaCookie > 0 ? "PRODUCT" : "PRODUCT_INCOMPLETE" });
+      }
     }
-    for (const bytes of [Buffer.alloc(100), header(1).subarray(0, 63), Buffer.from("SQLite format 2\0"), Buffer.alloc(0)]) {
+    const wrongMagic = header(1); wrongMagic.write("SQLite format 2\0");
+    for (const bytes of [Buffer.alloc(100), header(1).subarray(0, 99), wrongMagic, Buffer.alloc(0)]) {
       await writeFile(dataPaths(path).databasePath, bytes);
-      assert.equal(await readStorageVersion(dataPaths(path).databasePath), undefined);
-      assert.equal((await inspectDataDirectory(path)).kind, "PRODUCT_UNSUPPORTED");
+      assert.equal(await readSchemaCookie(dataPaths(path).databasePath), undefined);
+      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT_UNSUPPORTED", reason: "SQLite 文件头无效" });
     }
+    await rm(dataPaths(path).databasePath);
+    await mkdir(dataPaths(path).databasePath);
+    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT_UNSUPPORTED", reason: "主数据库不是普通文件" });
     assert.equal((await inspectDataDirectory(join(path, "mine.txt"))).kind, "NOT_WRITABLE");
     assert.equal((await inspectDataDirectory("relative")).kind, "NOT_WRITABLE");
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -114,7 +121,7 @@ test("inspection reports access failure and cloud paths including a symlink with
       const cloud = join(root, "Library", name);
       assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "MISSING" } });
       await product(cloud);
-      assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "PRODUCT", storageVersion: 2 } });
+      assert.deepEqual(await inspectDataDirectory(cloud, root), { kind: "SYNC_RISK", inspection: { kind: "PRODUCT" } });
       assert.equal((await inspectDataDirectory(`${cloud}-unrelated`, root)).kind, "MISSING");
     }
     await symlink(join(root, "Library/CloudStorage"), join(root, "alias"));
@@ -122,7 +129,7 @@ test("inspection reports access failure and cloud paths including a symlink with
   } finally { await chmod(locked, 0o700); await rm(root, { recursive: true, force: true }); }
 });
 
-test("initialization uses bundled baseline initialization and produces the fixed layout for empty or missing directories", async () => {
+test("initialization uses bundled initialization and produces the fixed layout for empty or missing directories", async () => {
   const root = await mkdtemp(join(tmpdir(), "desktop-init-"));
   try {
     const runtime = await fakeRuntime(root);
@@ -130,7 +137,7 @@ test("initialization uses bundled baseline initialization and produces the fixed
       const path = join(root, empty ? "empty data" : "missing data");
       if (empty) await mkdir(path);
       await initializeDataDirectory(path, runtime);
-      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT", storageVersion: 2 });
+      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT" });
       assert.deepEqual(JSON.parse(await readFile(dataPaths(path).workspaceConfigPath, "utf8")), { schemaVersion: 1, workspaces: [] });
       await assert.rejects(stat(join(path, "repository")), { code: "ENOENT" });
       assert.ok((await stat(join(path, "logs"))).isDirectory());
@@ -141,13 +148,68 @@ test("initialization uses bundled baseline initialization and produces the fixed
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("real built CLI initialization succeeds through the desktop runtime path with user_version zero", async () => {
+  const root = await mkdtemp(join(tmpdir(), "desktop-real-init-"));
+  try {
+    // Build @precedent-loop/server first. The Helper is a fixture; the CLI and schema are real build output.
+    const cli = fileURLToPath(new URL("../../server/dist/maintenance-cli.js", import.meta.url));
+    assert.ok((await stat(cli)).isFile());
+    const runtime = await fakeRuntime(root);
+    const entry = join(runtime, "apps/server/dist/maintenance-cli.js");
+    await rm(entry);
+    await symlink(cli, entry);
+    const path = join(root, "data");
+    await initializeDataDirectory(path, runtime);
+    assert.ok((await readSchemaCookie(dataPaths(path).databasePath))! > 0);
+    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT" });
+    const database = new DatabaseSync(dataPaths(path).databasePath, { readOnly: true });
+    try {
+      assert.equal(database.prepare("PRAGMA user_version").get()!.user_version, 0);
+      assert.ok(database.prepare("SELECT name FROM sqlite_master WHERE name = 'asset'").get());
+    } finally { database.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("real SQLite empty headers are incomplete and existing tables are recognized regardless of user_version", async () => {
+  const root = await mkdtemp(join(tmpdir(), "desktop-sqlite-header-"));
+  try {
+    for (const userVersion of [0, 2, 7]) {
+      const path = join(root, `data-${userVersion}`);
+      await prepareDirectoryLayout(path);
+      const database = new DatabaseSync(dataPaths(path).databasePath);
+      try { database.exec(`PRAGMA user_version = ${userVersion}`); }
+      finally { database.close(); }
+      assert.equal(await readSchemaCookie(dataPaths(path).databasePath), 0);
+      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT_INCOMPLETE" });
+      const existing = new DatabaseSync(dataPaths(path).databasePath);
+      try { existing.exec("CREATE TABLE fixture (id INTEGER PRIMARY KEY)"); }
+      finally { existing.close(); }
+      assert.ok((await readSchemaCookie(dataPaths(path).databasePath))! > 0);
+      const before = await readFile(dataPaths(path).databasePath);
+      assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT" });
+      assert.deepEqual(await readFile(dataPaths(path).databasePath), before);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a successful CLI exit with an uninitialized schema fails the initialization check", async () => {
+  const root = await mkdtemp(join(tmpdir(), "desktop-init-check-"));
+  try {
+    const runtime = await fakeRuntime(root, "", 0);
+    const path = join(root, "data");
+    await assert.rejects(initializeDataDirectory(path, runtime), error =>
+      error instanceof DataDirectoryError && error.step === "核对存储已初始化" && error.message.includes("存储尚未初始化"));
+    assert.deepEqual(await inspectDataDirectory(path), { kind: "PRODUCT_INCOMPLETE" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("initialization reports the failed step, retains partial results, and never writes into an unrelated directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "desktop-init-failure-"));
   try {
     const runtime = await fakeRuntime(root, "init-database");
     const path = join(root, "data");
     await assert.rejects(initializeDataDirectory(path, runtime), error => error instanceof DataDirectoryError && error.step === "init-database");
-    await assert.rejects(readStorageVersion(dataPaths(path).databasePath), { code: "ENOENT" });
+    await assert.rejects(readSchemaCookie(dataPaths(path).databasePath), { code: "ENOENT" });
     assert.equal((await inspectDataDirectory(path)).kind, "PRODUCT_INCOMPLETE");
     assert.ok(await readFile(join(path, ".precedentloop.json")));
     assert.ok(await readFile(dataPaths(path).workspaceConfigPath));
@@ -174,7 +236,7 @@ test("Helper identity derives from App name and validates every recorded runtime
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("marked missing or version-zero storage resumes without changing existing content; DS_Store is ignored", async () => {
+test("marked missing or schema-cookie-zero storage resumes without changing existing content; DS_Store is ignored", async () => {
   const root = await mkdtemp(join(tmpdir(), "desktop-resume-"));
   try {
     const runtime = await fakeRuntime(root);
@@ -182,12 +244,12 @@ test("marked missing or version-zero storage resumes without changing existing c
     assert.equal((await inspectDataDirectory(empty)).kind, "EMPTY");
     await initializeDataDirectory(empty, runtime);
     assert.equal(await readFile(join(empty, ".DS_Store"), "utf8"), "finder");
-    for (const version of [undefined, 0]) {
-      const path = join(root, `partial-${version}`);
+    for (const schemaCookie of [undefined, 0]) {
+      const path = join(root, `partial-${schemaCookie}`);
       await mkdir(path);
       const marker = JSON.stringify({ formatVersion: 1, dataId: randomUUID(), createdAt: new Date().toISOString() });
       await writeFile(join(path, ".precedentloop.json"), marker);
-      if (version === 0) await product(path, 0);
+      if (schemaCookie === 0) await product(path, 0);
       await mkdir(join(path, "config"), { recursive: true });
       await writeFile(dataPaths(path).workspaceConfigPath, '{"schemaVersion":1,"workspaces":[]}\n');
       await writeFile(join(path, "keep.md"), "retain");
@@ -221,6 +283,6 @@ test("all data writes reject sync-risk paths until explicit confirmation, includ
     await assert.rejects(ensureMarker(path, { home: root }), /确认同步盘风险/);
     await product(path);
     await ensureMarker(path, { home: root, syncRiskConfirmed: true });
-    assert.equal(await readStorageVersion(dataPaths(path).databasePath), 2);
+    assert.equal(await readSchemaCookie(dataPaths(path).databasePath), 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

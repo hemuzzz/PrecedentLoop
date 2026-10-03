@@ -1,7 +1,7 @@
 import { openDatabase } from "../storage/schema.js";
 import { loadWorkspaceConfig } from "../workspace/config.js";
 import { AssetRepository, type AssetRecord } from "./asset-repository.js";
-import type { AssetScope, AssetType, WorkspaceConfig } from "./schema.js";
+import { foldCase, type AssetScope, type AssetType, type WorkspaceConfig } from "./schema.js";
 
 export type SearchStrategy = "FTS" | "LITERAL" | "HYBRID";
 export interface AssetSearchContext { authorizedWorkspaces: readonly string[]; workspaceConfigSnapshot?: WorkspaceConfig }
@@ -80,11 +80,12 @@ export class AssetSearchService {
     const ranked: RankedSearchItem[] = [];
     for (const asset of rows) {
       const title = foldCase(asset.title), summary = foldCase(asset.summary), body = foldCase(asset.bodyMarkdown);
-      const fields = { title, summary, body, combined: `${title}\n${summary}\n${body}` };
+      const retrievalTerms = foldCase(asset.retrievalTerms.join("\n"));
+      const fields = { title, summary, retrievalTerms, body, combined: `${title}\n${summary}\n${retrievalTerms}\n${body}` };
       if (!query.terms.every(term => fields.combined.includes(term))) continue;
       const fieldTier = query.strategy === "LITERAL" ? literalFieldTier(fields, query) : ftsFieldTier(fields, query.terms);
       const workspacePriority = asset.scope === "WORKSPACE" && (preferred === undefined ? workspaces.includes(asset.workspace!) : asset.workspace === preferred) ? 1 : 0;
-      const source = [asset.title, asset.summary, asset.bodyMarkdown].find(value => query.terms.some(term => foldCase(value).includes(term))) ?? asset.bodyMarkdown;
+      const source = [asset.title, asset.summary, asset.retrievalTerms.join("\n"), asset.bodyMarkdown].find(value => query.terms.some(term => foldCase(value).includes(term))) ?? asset.bodyMarkdown;
       const compact = source.replaceAll(/\s+/gu, " ").trim();
       const positions = query.terms.map(term => foldCase(compact).indexOf(term)).filter(position => position >= 0);
       const start = Math.max(0, (positions.length ? Math.min(...positions) : 0) - 40), end = Math.min(compact.length, start + 180);
@@ -101,7 +102,6 @@ function limit(value = 20): number {
   if (!Number.isSafeInteger(value) || value <= 0) throw new AssetSearchInputError("INVALID_LIMIT", "Search limit must be a positive safe integer");
   return value;
 }
-function foldCase(value: string): string { return value.toLocaleLowerCase("en-US"); }
 // Recall treats each array item as one literal substring. Keep the library's
 // word-search normalization separate; spaces and punctuation here are data.
 export function normalizeRecallExpression(query: string): NormalizedSearchQuery {
@@ -147,7 +147,7 @@ export function buildFtsAndQuery(terms: readonly string[]): string {
 }
 
 function literalFieldTier(
-  fields: {title: string; summary: string; body: string; combined: string},
+  fields: {title: string; summary: string; retrievalTerms: string; body: string; combined: string},
   query: NormalizedSearchQuery,
 ): number {
   if (fields.title === query.phrase) {
@@ -159,12 +159,12 @@ function literalFieldTier(
   if (query.terms.every((term) => fields.title.includes(term))) {
     return 4;
   }
-  if (query.terms.every((term) => fields.summary.includes(term))) {
+  if (query.terms.every((term) => fields.summary.includes(term)) || query.terms.every(term => fields.retrievalTerms.includes(term))) {
     return 3;
   }
   const bodyContainsAll = query.terms.every((term) => fields.body.includes(term));
   const metadataContainsAny = query.terms.some(
-    (term) => fields.title.includes(term) || fields.summary.includes(term),
+    (term) => fields.title.includes(term) || fields.summary.includes(term) || fields.retrievalTerms.includes(term),
   );
   if (bodyContainsAll && !metadataContainsAny) {
     return 1;
@@ -172,11 +172,11 @@ function literalFieldTier(
   return 2;
 }
 
-function ftsFieldTier(fields: {title: string; summary: string; body: string; combined: string}, terms: readonly string[]): number {
+function ftsFieldTier(fields: {title: string; summary: string; retrievalTerms: string; body: string; combined: string}, terms: readonly string[]): number {
   if (terms.some((term) => fields.title.includes(term))) {
     return 3;
   }
-  if (terms.some((term) => fields.summary.includes(term))) {
+  if (terms.some((term) => fields.summary.includes(term) || fields.retrievalTerms.includes(term))) {
     return 2;
   }
   return 1;

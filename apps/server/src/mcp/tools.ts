@@ -8,6 +8,7 @@ import { RepositoryOperationError } from "../asset/errors.js";
 import { StructuredCandidateError } from "../asset/structured-candidate-checks.js";
 import { assetIdSchema } from "../asset/schema.js";
 import type { KnowledgeService } from "../knowledge/service.js";
+import { KNOWLEDGE_RECALL_DESCRIPTION } from "../knowledge/recall-rules.js";
 import { KnowledgeError, recallInputSchema, readInputSchema, usedInputSchema, capabilityIdsSchema, referenceSchema, versionSchema } from "../knowledge/model.js";
 import { AssetNotAccessibleError, AssetNotFoundError } from "../asset/index.js";
 export { recallInputSchema };
@@ -56,9 +57,9 @@ export function createAssetMcpServer(dependencies: AssetMcpDependencies): McpSer
       return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: { code, ...(error instanceof StructuredCandidateError ? { field: error.field } : {}) } }) }] };
     }
   };
-  server.registerTool("knowledge_recall", { description: "Recall knowledge using 1–8 complete literal expressions in queries, matched as case-insensitive substrings with OR across items. Spaces and punctuation are literal, never implicit AND, regex, or Boolean syntax. Reuse visible, applicable native search expressions for the same purpose without rewriting or dropping them; append only evidence-backed alternatives. Otherwise derive precise names, identifiers or phrases from the request; native search is not a prerequisite. One deduplicated result shares the 8-asset/5000-character budget. Explicit capabilityIds selects scope; [] selects GLOBAL only.", inputSchema: recallInputSchema, _meta: { "anthropic/alwaysLoad": true } },
+  server.registerTool("knowledge_recall", { description: KNOWLEDGE_RECALL_DESCRIPTION, inputSchema: recallInputSchema, _meta: { "anthropic/alwaysLoad": true } },
     async (input) => execute(() => dependencies.knowledgeService.recall(input)));
-  server.registerTool("asset_read", { description: "Read qualified current content. Pass the same capabilityIds used for the recall, plus exactly one target: recallItemId, or assetId with optional expectedVersion. Knowledge is a historical judgment; verify current target evidence before describing current behavior, editing or troubleshooting. Use returned version as candidate_prepare revision.baseVersion.", inputSchema: assetReadToolInputSchema },
+  server.registerTool("asset_read", { description: "Read qualified current content, including retrievalTerms. Pass the same capabilityIds used for the recall, plus exactly one target: recallItemId, or assetId with optional expectedVersion. Knowledge is a historical judgment; verify current target evidence before describing current behavior, editing or troubleshooting. Use returned version as candidate_prepare revision.baseVersion and submit the complete retrievalTerms list when revising.", inputSchema: assetReadToolInputSchema },
     async (input) => execute(() => dependencies.knowledgeService.read(input)));
   server.registerTool("asset_mark_used", { description: "Explicitly settle a persistent source that influenced work. Pass the same capabilityIds used for the recall, plus exactly one of recallItemId or readRef. Content evolution does not invalidate Used. Only mark knowledge that actually influenced analysis, decisions, implementation or review; recall or reading alone does not count.", inputSchema: assetMarkUsedToolInputSchema,
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false } },

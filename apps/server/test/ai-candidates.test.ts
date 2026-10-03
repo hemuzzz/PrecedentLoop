@@ -13,7 +13,7 @@ import { candidateFixture, content, selection } from "../test-support/candidate-
 
 const batch = (requestId: string) => ({ requestId, provider: "codex", sources: [{ name: "one.md", content: "第一份资料" }, { name: "two.md", content: "第二份资料" }], targets: [{ scope: "GLOBAL" }], instructions: "保留有依据的结论" });
 const conclusion = "候选提交前必须核对正式基线和适用范围，只有内容完整且经过检查时才允许写入。";
-const output = (count = 1) => ({ schemaVersion: 1, candidates: Array.from({ length: count }, (_, i) => ({ title: `结论${i}`, summary: "摘要", conclusion, conditions: "适用于本地候选导入", verified: "已在隔离目录核对写入结果", reasons: null, unverified: null, recheckPoints: null, evidence: null, related: null, type: "MEMORY", targetKey: "0", existingAssetRef: null, sourceKeys: ["0", "1"] })), sourceResults: [{ sourceKey: "0", explanation: "共同支持结论", pendingRef: null }, { sourceKey: "1", explanation: "补充必要条件", pendingRef: null }], warnings: [] });
+const output = (count = 1) => ({ schemaVersion: 1, candidates: Array.from({ length: count }, (_, i) => ({ title: `结论${i}`, summary: "摘要", retrievalTerms: content().retrievalTerms, conclusion, conditions: "适用于本地候选导入", verified: "已在隔离目录核对写入结果", reasons: null, unverified: null, recheckPoints: null, evidence: null, related: null, type: "MEMORY", targetKey: "0", existingAssetRef: null, sourceKeys: ["0", "1"] })), sourceResults: [{ sourceKey: "0", explanation: "共同支持结论", pendingRef: null }, { sourceKey: "1", explanation: "补充必要条件", pendingRef: null }], warnings: [] });
 async function finished(service: AiService, id: string): Promise<AiOperationStatus> {
   for (let i = 0; i < 200; i++) {
     const result = await service.status(id);
@@ -27,7 +27,7 @@ test("AI import references and rewrite candidate/baseline display their heading 
   const f = await candidateFixture();
   const original = content(`# 候选知识\n\n${conclusion}`);
   const revised = content(`# 候选知识\n\n修订：${conclusion}`);
-  const expected = `# 候选知识\n\n可核实的摘要\n\n${conclusion}`;
+  const expected = `# 候选知识\n\n可核实的摘要\n\n检索词：${JSON.stringify(original.retrievalTerms)}\n\n${conclusion}`;
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => {
     const payload = JSON.parse(await readFile(join(input.directory, "input.json"), "utf8")) as {
       operation: string; existingAssets: Array<{ content: string }>; candidate: string; baseline: string;
@@ -37,8 +37,8 @@ test("AI import references and rewrite candidate/baseline display their heading 
       return output(0);
     }
     assert.equal(payload.baseline, expected);
-    assert.equal(payload.candidate, `# 候选知识\n\n可核实的摘要\n\n修订：${conclusion}`);
-    return { schemaVersion: 1, content: { title: revised.title, summary: revised.summary, bodyMarkdown: revised.bodyMarkdown }, explanation: "保持内容" };
+    assert.equal(payload.candidate, `# 候选知识\n\n可核实的摘要\n\n检索词：${JSON.stringify(revised.retrievalTerms)}\n\n修订：${conclusion}`);
+    return { schemaVersion: 1, content: { title: revised.title, summary: revised.summary, retrievalTerms: revised.retrievalTerms, bodyMarkdown: revised.bodyMarkdown }, explanation: "保持内容" };
   } });
   try {
     const item = (await f.prepare("display-formal", [original])).candidates[0]!;
@@ -48,6 +48,34 @@ test("AI import references and rewrite candidate/baseline display their heading 
     const revision = (await f.prepare("display-revision", [{ ...revised, existingAssetId: item.assetId, baseVersion: 0 }])).candidates[0]!;
     await ai.rewrite({ ...selection(revision, "display-rewrite"), provider: "codex", instructions: "检查正文" });
     assert.equal((await finished(ai, "display-rewrite")).state, "SUCCEEDED");
+    assert.deepEqual((await f.service.list()).items[0]!.retrievalTerms, revised.retrievalTerms);
+  } finally { await ai.close(); await f.cleanup(); }
+});
+
+test("AI import and rewrite require valid terms and persist normalized output", async () => {
+  const f = await candidateFixture(); let valid = false;
+  const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => {
+    const payload = JSON.parse(await readFile(join(input.directory, "input.json"), "utf8")) as { operation: string };
+    const retrievalTerms = valid ? ["  CandidateTerms  ", "candidateterms", "候选检索", "完整列表"] : ["invalid"];
+    return payload.operation === "import" ? { ...output(), candidates: [{ ...output().candidates[0], retrievalTerms }] }
+      : { schemaVersion: 1, content: { title: "改稿", summary: "摘要", bodyMarkdown: conclusion, retrievalTerms }, explanation: "更新检索词" };
+  } });
+  try {
+    await ai.import(batch("invalid-terms"));
+    assert.equal((await finished(ai, "invalid-terms")).error?.code, "AI_OUTPUT_INVALID");
+    assert.equal((await f.service.list()).items.length, 0);
+    valid = true; await ai.import(batch("valid-terms"));
+    assert.equal((await finished(ai, "valid-terms")).state, "SUCCEEDED");
+    const item = (await f.service.list()).items[0]!;
+    assert.deepEqual(item.retrievalTerms, ["CandidateTerms", "候选检索", "完整列表"]);
+    valid = false;
+    await ai.rewrite({ ...selection(item, "invalid-rewrite-terms"), provider: "codex", instructions: "修改" });
+    assert.equal((await finished(ai, "invalid-rewrite-terms")).error?.code, "AI_OUTPUT_INVALID");
+    assert.equal((await f.service.list()).items[0]!.version, item.version);
+    valid = true;
+    await ai.rewrite({ ...selection(item, "valid-rewrite-terms"), provider: "codex", instructions: "修改" });
+    assert.equal((await finished(ai, "valid-rewrite-terms")).state, "SUCCEEDED");
+    assert.deepEqual((await f.service.list()).items[0]!.retrievalTerms, ["CandidateTerms", "候选检索", "完整列表"]);
   } finally { await ai.close(); await f.cleanup(); }
 });
 
@@ -84,7 +112,7 @@ test("all import types produce the same candidate body as MCP apart from retenti
   const f = await candidateFixture();
   const repository = new KnowledgeRepository(f.options.databasePath);
   const capabilities = new WorkspaceCapabilityService(repository, f.options.workspaceConfigPath);
-  const common = { capabilityIds: [], title: "可复用的知识", summary: "候选内容保持完整",
+  const common = { capabilityIds: [], title: "可复用的知识", summary: "候选内容保持完整", retrievalTerms: content().retrievalTerms,
     evidence: [{ supports: "边界", kind: "EXCERPT", processing: "PARTIAL", content: "核对内容与范围", sourceHint: "one.md", sourceTime: "2026-09" },
       { supports: "结论", kind: "EXPLANATION", content: "本地核查记录" }] };
   const inputs = [
@@ -92,7 +120,7 @@ test("all import types produce the same candidate body as MCP apart from retenti
     { ...common, type: "SKILL", trigger: "提交候选时", prerequisites: "隔离目录", steps: [conclusion, "检查回执"], verification: "读取回执", stopConditions: "基线不符", recheckPoints: "确认范围" },
     { ...common, type: "DOCUMENT", purpose: conclusion, coverage: "本地参考手册", bodyMarkdown: "## 完整参考\n\n" + conclusion },
   ].map(input => candidatePrepareInputSchema.parse(input));
-  const generated = inputs.map(input => ({ type: input.type, title: input.title, summary: input.summary,
+  const generated = inputs.map(input => ({ type: input.type, title: input.title, summary: input.summary, retrievalTerms: input.retrievalTerms,
     ...Object.fromEntries(allowed[input.type].map(name => [name, input[name] ?? null])),
     evidence: input.evidence!.map(item => ({ ...item, processing: item.processing ?? null, sourceHint: item.sourceHint ?? null, sourceTime: item.sourceTime ?? null })),
     related: null, targetKey: "0", existingAssetRef: null, sourceKeys: ["0", "1"] }));
@@ -288,7 +316,7 @@ test("AI rewrite rejects credentials and link-only bodies without changing candi
   const f = await candidateFixture(); let bodyMarkdown = 'password="DO_NOT_ECHO"';
   const candidate = (await f.prepare("original", [content(conclusion)])).candidates[0]!;
   const before = (await f.service.list()).items[0]!;
-  const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => ({ schemaVersion: 1, content: { title: "改稿", summary: "摘要", bodyMarkdown }, explanation: "修改" }) });
+  const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => ({ schemaVersion: 1, content: { title: "改稿", summary: "摘要", retrievalTerms: content().retrievalTerms, bodyMarkdown }, explanation: "修改" }) });
   try {
     for (const code of ["CONTENT_CONTAINS_SECRET", "CONTENT_DEPENDS_ON_LINKS"]) {
       await ai.rewrite({ ...selection(candidate, code), provider: "codex", instructions: "修改" });
@@ -454,7 +482,7 @@ test("invalid coverage, unauthorized target, forged reference, extra field and t
 test("rewrite runs without a database lock, preserves identity and returns changed content to pending", async () => {
   const f = await candidateFixture(); let release!: () => void, entered!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
-  const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => { assert.match(input.prompt, /原文/u); entered(); await wait; return { schemaVersion: 1, content: { title: "改稿", summary: "修正摘要", bodyMarkdown: conclusion }, explanation: "补充条件" }; } });
+  const ai = new AiService(f.service, { configPath: f.configPath, runner: async input => { assert.match(input.prompt, /原文/u); entered(); await wait; return { schemaVersion: 1, content: { title: "改稿", summary: "修正摘要", retrievalTerms: content().retrievalTerms, bodyMarkdown: conclusion }, explanation: "补充条件" }; } });
   try {
     const candidate = (await f.prepare("prepare", [content()])).candidates[0]!;
     await f.service.defer({ ...selection(candidate, "defer"), deferred: true });
@@ -476,8 +504,8 @@ test("external edit during rewrite is preserved and no operation receipt is fabr
   const candidate = (await f.prepare("prepare", [content()])).candidates[0]!;
   const item = (await f.service.list()).items[0]!;
   const ai = new AiService(f.service, { configPath: f.configPath, runner: async () => {
-    await f.service.rewrite(selection(candidate, "concurrent-edit"), { title: item.title, summary: item.summary, bodyMarkdown: `${item.bodyMarkdown}\n外部编辑` });
-    return { schemaVersion: 1, content: { title: "改稿", summary: "摘要", bodyMarkdown: conclusion }, explanation: "修改" };
+    await f.service.rewrite(selection(candidate, "concurrent-edit"), { title: item.title, summary: item.summary, retrievalTerms: item.retrievalTerms, bodyMarkdown: `${item.bodyMarkdown}\n外部编辑` });
+    return { schemaVersion: 1, content: { title: "改稿", summary: "摘要", retrievalTerms: content().retrievalTerms, bodyMarkdown: conclusion }, explanation: "修改" };
   } });
   try {
     await ai.rewrite({ ...selection(candidate, "rewrite"), provider: "codex", instructions: "修改" });

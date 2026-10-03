@@ -7,6 +7,6 @@ export function seedAssets(databasePath, assets) {
   const db = openDatabase(databasePath);
   try {
     const repository = new AssetRepository(db), writes = new CandidateRepository(db);
-    writes.write(randomUUID(), "accept", "fixture", () => assets.map(asset => repository.insert(asset)));
+    writes.write(randomUUID(), "accept", "fixture", () => assets.map(asset => repository.insert({ retrievalTerms: [], ...asset })));
   } finally { db.close(); }
 }

@@ -1,4 +1,5 @@
-import { initializeDatabase } from "../src/storage/schema.js";
+import { initializeDatabase, openDatabase } from "../src/storage/schema.js";
+import { AssetRepository } from "../src/asset/asset-repository.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -37,6 +38,29 @@ async function fixture(t: TestContext) {
   return { root, userData, data, home, config, invoke };
 }
 const assessment = { sessionId: "synthetic-session", turnId: "synthetic-turn", outcome: "NO_INCREMENT", reason: "isolated fixture" };
+
+test("both launcher hosts accept record inputs above 8192 up to 16384 bytes and preserve Stop on issue database failure", async t => {
+  const f = await fixture(t), path = join(f.data, "runtime/precedent-loop.sqlite");
+  const db = openDatabase(path); t.after(() => db.close());
+  db.transaction(() => new AssetRepository(db).insert({ assetId: "ast1", type: "MEMORY", scope: "GLOBAL", workspace: null, title: "test", summary: "summary", retrievalTerms: [], bodyMarkdown: "body" })).immediate();
+  const input = { ...assessment, knowledgeIssues: Array.from({ length: 4 }, () => ({ assetId: "ast1", kind: "OUTDATED", detail: "中".repeat(500), evidence: "文".repeat(500) })) };
+  assert.ok(Buffer.byteLength(JSON.stringify(input)) > 8192 && Buffer.byteLength(JSON.stringify(input)) < 16384);
+  for (const host of ["codex", "claude"]) {
+    const record = await f.invoke(host, "record", input);
+    assert.equal(record.code, 0, record.stderr); assert.deepEqual(JSON.parse(record.stdout), { recorded: true, issues: { recorded: 4, skipped: [] } });
+    assert.deepEqual(db.prepare("SELECT DISTINCT source FROM asset_issue WHERE is_deleted=0").all(), [{ source: host.toUpperCase() }]);
+    const oversized = await f.invoke(host, "record", `${JSON.stringify(input)}${" ".repeat(16385 - Buffer.byteLength(JSON.stringify(input)))}`);
+    assert.equal(oversized.code, 1); assert.equal(oversized.stdout, "");
+    assert.deepEqual(JSON.parse((await f.invoke(host, "stop", { hook_event_name: "Stop", session_id: assessment.sessionId,
+      [host === "codex" ? "turn_id" : "prompt_id"]: assessment.turnId })).stdout), {});
+  }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = await f.invoke("codex", "record", input);
+    assert.equal(result.code, 0); assert.deepEqual(JSON.parse(result.stdout), { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } });
+    assert.ok(result.ms >= 1000 && result.ms < 3000, `busy wait ${result.ms}`);
+  } finally { db.exec("ROLLBACK"); }
+});
 
 test("Codex launcher ignores old protocol locations and needs no protocol file", async t => {
   const f = await fixture(t), codexHome = join(f.root, "custom-codex-home");
@@ -125,7 +149,8 @@ test("record errors, missing Claude prompt_id, filesystem/log failures and unfin
   for (const event of ["stop", "record"]) {
     const timeout = await f.invoke("claude", event, null);
     assert.equal(timeout.code, event === "record" ? 1 : 0); assert.equal(timeout.stdout, "");
-    assert.ok(timeout.ms < 2000);
+    assert.ok(timeout.ms < (event === "record" ? 4500 : 2000));
+    if (event === "record") assert.ok(timeout.ms >= 3000);
   }
 });
 

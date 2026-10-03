@@ -8,7 +8,7 @@ test("N13 candidate acceptance, revisions, scope and persistent facts survive re
   const candidates = f.candidateService;
   try {
     const content = { type: "MEMORY", target: { scope: "WORKSPACE", workspace: "alpha" }, title: "Synthetic migration bridge",
-      summary: "synthetic M03 M04 bridge without legacy identifiers", bodyMarkdown: "migrationbridge original current Markdown" };
+      summary: "synthetic M03 M04 bridge without legacy identifiers", retrievalTerms: ["migrationbridge", "正式候选", "版本边界"], bodyMarkdown: "migrationbridge original current Markdown" };
     const prepared = await candidates.prepare("prepare", [content]); assert.ok(!("status" in prepared));
     const item = prepared.candidates[0]!;
     const selection = { candidateId: item.candidateId, assetId: item.assetId, candidateVersion: 0 };

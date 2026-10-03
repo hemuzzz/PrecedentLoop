@@ -25,7 +25,7 @@ export interface Source {
 }
 export interface RecallItem extends Source {
   recallItemId: string | null; title: string; type: "MEMORY" | "DOCUMENT" | "SKILL";
-  deliveredMode: "DIRECT" | "ON_DEMAND"; deliveryReasons: string[]; summary?: string; reference: string;
+  deliveredMode: "DIRECT" | "ON_DEMAND"; deliveryReasons: string[]; summary?: string;
 }
 export interface Budget {
   maxAssets: number; maxModelVisibleCharacters: number; modelVisibleCharacters: number;
@@ -35,6 +35,13 @@ export interface Budget {
 export interface RecallResult {
   usageRecorded: boolean; recallId: string | null; authorizedWorkspaces: string[]; queries: string[];
   occurredAt: string; items: RecallItem[]; diagnostics: string[]; budget: Budget;
+}
+export interface RecallResponse {
+  usageRecorded: boolean; authorizedWorkspaces: string[]; reference: string;
+  items: Array<Pick<RecallItem, "recallItemId" | "assetId" | "version" | "title" | "type" | "summary"> & {
+    workspace: string | null; deliveryReasons?: string[];
+  }>;
+  diagnostics: string[]; budget: Pick<Budget, "omittedCount" | "downgradedCount">;
 }
 export interface ReadFact extends Source {
   readRef: string; authorizedWorkspaces: string[]; recallItemId: string | null; occurredAt: string;
