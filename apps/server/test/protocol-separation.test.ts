@@ -107,7 +107,13 @@ test("both hosts deliver bounded context with filled record template and no prot
     const identity = { session_id: "11111111-1111-4111-8111-111111111111", turn_id: "22222222-2222-4222-8222-222222222222", prompt_id: "33333333-3333-4333-8333-333333333333" };
     const output = context(await handleCodexHook({ ...f.input, ...identity }, { ...f, captureCommand }, host));
     const withoutCapabilities = output.replace(/(Precedent Loop WorkspaceCapability\n)[^\n]+/u, "$1");
-    assert.ok(output.includes("用到的知识过时、有误、不完整、标题误导或换说法才召回到，且不能直接修订时，记录中加 knowledgeIssues：[{assetId,kind,detail,evidence?,missedQueries?}]，kind 取 OUTDATED|INACCURATE|INCOMPLETE|MISLEADING|MISSED，detail 写明哪里不对与已知现状。"));
+    assert.doesNotMatch(output, /knowledgeIssues|评估记为 FAILED|display 原样/);
+    assert.match(output, /只读只限制工作区（代码、配置、文件）修改/);
+    assert.match(output, /满足条件且用户未明确禁止写知识或候选时/);
+    assert.match(output, /REVISION_BLOCKED 时用 mcp__precedent__candidate_update 并入挡住的候选/);
+    assert.match(output, /先 mcp__precedent__asset_read 取原文和 version，再用 mcp__precedent__candidate_prepare 带 revision 准备修订候选/);
+    assert.match(output, /只改有直接证据的部分；换说法才召回到时补检索词/);
+    assert.match(output, /不写很快会变的流程状态/);
     assert.doesNotMatch(output, /Skills|KNOWLEDGE|协议位置/);
     assert.ok(output.includes(`cat <<'EOF' | ${captureCommand}`));
     assert.ok(output.includes(`"sessionId":"${identity.session_id}"`));

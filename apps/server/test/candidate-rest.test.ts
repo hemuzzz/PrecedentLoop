@@ -17,8 +17,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { IssueService } from "../src/asset/issue-service.js";
-import type { IssueCard } from "../src/asset/issue-repository.js";
 
 const authority = "127.0.0.1:3199";
 async function fixture() {
@@ -188,46 +186,6 @@ test("AI test is a protected write route with a fixed payload and never records 
   } finally { await f.cleanup(); }
 });
 
-test("issue REST groups cards, counts them in overview/status and protects dismiss/draft writes", async () => {
-  const f = await fixture();
-  try {
-    const pending = (await f.prepare("issue-asset", [content()])).candidates[0]!;
-    await f.service.accept(selection(pending, "issue-accept"));
-    new IssueService(f.options.databasePath).record({ sessionId: "rest", turnId: "turn", knowledgeIssues: [{ assetId: pending.assetId, kind: "INCOMPLETE", detail: "需要补充条件" }] }, "CODEX");
-    const inbox = await (await f.get("/api/inbox")).json() as { data: { items: unknown[]; issueCards: IssueCard[] } };
-    assert.equal(inbox.data.items.length, 0); assert.equal(inbox.data.issueCards.length, 1);
-    const count = async () => {
-      const overview = await (await f.get("/api/overview")).json() as { data: { scopes: Array<{ inboxCount: number }> } };
-      const status = await (await f.get("/api/system/status")).json() as { data: { storage: { inboxAssetCount: number } } };
-      assert.equal(status.data.storage.inboxAssetCount, overview.data.scopes.reduce((n, scope) => n + scope.inboxCount, 0));
-      return status.data.storage.inboxAssetCount;
-    };
-    assert.equal(await count(), 1);
-    const revision = (await f.prepare("issue-revision", [{ ...content(), existingAssetId: pending.assetId, baseVersion: 0 }])).candidates[0]!;
-    assert.equal(await count(), 1);
-    const attached = await (await f.get("/api/inbox")).json() as { data: { items: Array<{ issues: unknown[] }>; issueCards: unknown[] } };
-    assert.equal(attached.data.items[0]!.issues.length, 1); assert.equal(attached.data.issueCards.length, 0);
-    for (const route of ["dismiss-issue", "draft-revision"]) {
-      for (const headers of [{ "x-hub-write-token": "" }, { origin: "http://evil.invalid" }, { host: "evil.invalid" }])
-        assert.equal((await f.post(`/api/inbox/${route}`, {}, headers)).status, 403);
-    }
-    assert.equal((await f.post("/api/inbox/draft-revision", { requestId: "draft", assetId: pending.assetId })).status, 400);
-    assert.equal((await f.post("/api/inbox/draft-revision", { requestId: "draft", assetId: pending.assetId, provider: "codex", extra: true })).status, 400);
-    const input = { issueId: inbox.data.issueCards[0]!.issues[0]!.issueId };
-    assert.equal((await f.post("/api/inbox/dismiss-issue", { ...input, status: "RESOLVED" })).status, 400);
-    assert.equal((await f.post("/api/inbox/dismiss-issue", input)).status, 200);
-    assert.equal((await f.post("/api/inbox/dismiss-issue", input)).status, 409);
-    await f.service.reject(selection(revision, "issue-reject"));
-    assert.equal(await count(), 0);
-    assert.equal((await f.post("/api/inbox/draft-revision", { requestId: "draft-empty", assetId: pending.assetId, provider: "codex" })).status, 200);
-    let operation: { state: string; error?: { code: string } } | undefined;
-    for (let i = 0; i < 100; i++) {
-      const result = await (await f.get("/api/inbox/operation?requestId=draft-empty")).json() as { data: { operation: typeof operation } };
-      operation = result.data.operation; if (operation?.state !== "RUNNING") break; await delay(10);
-    }
-    assert.equal(operation?.state, "FAILED"); assert.equal(operation.error?.code, "VERSION_CONFLICT");
-  } finally { await f.cleanup(); }
-});
 
 test("import accepts a body above the old HTTP limit without removing limits on unrelated writes", async () => {
   const f = await fixture(); const content = "x".repeat(7_000_001);

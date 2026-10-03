@@ -39,7 +39,7 @@ async function fixture(t: TestContext) {
 }
 const assessment = { sessionId: "synthetic-session", turnId: "synthetic-turn", outcome: "NO_INCREMENT", reason: "isolated fixture" };
 
-test("both launcher hosts accept record inputs above 8192 up to 16384 bytes and preserve Stop on issue database failure", async t => {
+test("both launcher hosts ignore legacy knowledgeIssues, accept bounded inputs and record while the database is locked", async t => {
   const f = await fixture(t), path = join(f.data, "runtime/precedent-loop.sqlite");
   const db = openDatabase(path); t.after(() => db.close());
   db.transaction(() => new AssetRepository(db).insert({ assetId: "ast1", type: "MEMORY", scope: "GLOBAL", workspace: null, title: "test", summary: "summary", retrievalTerms: [], bodyMarkdown: "body" })).immediate();
@@ -47,8 +47,7 @@ test("both launcher hosts accept record inputs above 8192 up to 16384 bytes and 
   assert.ok(Buffer.byteLength(JSON.stringify(input)) > 8192 && Buffer.byteLength(JSON.stringify(input)) < 16384);
   for (const host of ["codex", "claude"]) {
     const record = await f.invoke(host, "record", input);
-    assert.equal(record.code, 0, record.stderr); assert.deepEqual(JSON.parse(record.stdout), { recorded: true, issues: { recorded: 4, skipped: [] } });
-    assert.deepEqual(db.prepare("SELECT DISTINCT source FROM asset_issue WHERE is_deleted=0").all(), [{ source: host.toUpperCase() }]);
+    assert.equal(record.code, 0, record.stderr); assert.deepEqual(JSON.parse(record.stdout), { recorded: true });
     const oversized = await f.invoke(host, "record", `${JSON.stringify(input)}${" ".repeat(16385 - Buffer.byteLength(JSON.stringify(input)))}`);
     assert.equal(oversized.code, 1); assert.equal(oversized.stdout, "");
     assert.deepEqual(JSON.parse((await f.invoke(host, "stop", { hook_event_name: "Stop", session_id: assessment.sessionId,
@@ -57,8 +56,8 @@ test("both launcher hosts accept record inputs above 8192 up to 16384 bytes and 
   db.exec("BEGIN IMMEDIATE");
   try {
     const result = await f.invoke("codex", "record", input);
-    assert.equal(result.code, 0); assert.deepEqual(JSON.parse(result.stdout), { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } });
-    assert.ok(result.ms >= 1000 && result.ms < 3000, `busy wait ${result.ms}`);
+    assert.equal(result.code, 0); assert.deepEqual(JSON.parse(result.stdout), { recorded: true });
+    assert.ok(result.ms < 3000, `record time ${result.ms}`);
   } finally { db.exec("ROLLBACK"); }
 });
 

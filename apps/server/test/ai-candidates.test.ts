@@ -207,8 +207,7 @@ test("revision conflicts include pending and deferred records and do not roll ba
       const result = status.result as { candidates: unknown[]; warnings: string[] };
       assert.equal(result.candidates.length, 1);
       assert.equal(result.warnings.length, 1);
-      assert.ok(result.warnings[0]!.includes(`已有未处理的候选 #${pending.record.number}（${requestId === "abnormal-conflict" ? "暂存" : "待审"}），本次修订没有写入`));
-      assert.match(result.warnings[0]!, /接受或拒绝/);
+      assert.equal(result.warnings[0], `候选《修订》未写入：已有未处理的候选 #${pending.record.number}（${requestId === "abnormal-conflict" ? "暂存" : "待审"}）。`);
     }
   } finally { await ai.close(); await f.cleanup(); }
 });

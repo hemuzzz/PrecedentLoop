@@ -15,8 +15,7 @@ const writing = ref(false);
 const preparing = ref(false);
 const busy = computed(() => preparing.value || writing.value || operation.value?.state === "RUNNING");
 const error = ref("");
-const modal = ref<"import" | "rewrite" | "draft-revision" | "delete" | "diff" | null>(null);
-const draftTarget = ref<{ assetId: string; title: string; candidateId?: string }>();
+const modal = ref<"import" | "rewrite" | "delete" | "diff" | null>(null);
 const expanded = ref(false);
 const item = ref<InboxItem>();
 const rewriteBefore = ref<InboxItem>();
@@ -30,7 +29,7 @@ const importMenu = ref<InstanceType<typeof FilterMenu>>();
 const afterMarkdown = ref("");
 const rewriteRequestId = ref("");
 const storageKey = "precedent-loop-inbox-operation";
-type OperationKind = "import" | "rewrite" | "draft-revision" | "accept" | "defer" | "reject";
+type OperationKind = "import" | "rewrite" | "accept" | "defer" | "reject";
 interface OperationContext { requestId: string; kind: OperationKind; candidateId?: string | undefined }
 const context = ref<OperationContext>();
 const writingContext = ref<OperationContext>();
@@ -38,8 +37,8 @@ const errorTarget = ref<{ requestId?: string; candidateId?: string | undefined }
 const importRunning = computed(() => (writing.value && writingContext.value?.kind === "import")
   || (operation.value?.state === "RUNNING" && operation.value.operation === "import"));
 function isRewriting(candidateId?: string): boolean {
-  return !!candidateId && ((writing.value && ["rewrite", "draft-revision"].includes(writingContext.value?.kind ?? "") && writingContext.value?.candidateId === candidateId)
-    || (context.value?.candidateId === candidateId && ["rewrite", "draft-revision"].includes(context.value.kind)
+  return !!candidateId && ((writing.value && writingContext.value?.kind === "rewrite" && writingContext.value?.candidateId === candidateId)
+    || (context.value?.candidateId === candidateId && context.value.kind === "rewrite"
       && operation.value?.requestId === context.value.requestId && operation.value.state === "RUNNING"));
 }
 const feedback = computed(() => {
@@ -48,9 +47,8 @@ const feedback = computed(() => {
   const text = error.value || (current?.state === "FAILED" ? current.error?.message || "操作未完成"
     : current?.state === "SUCCEEDED" ? current.operation === "rewrite" ? "已修改，待审阅"
       : current.operation === "import" ? `已生成 ${current.result?.count ?? 0} 条候选，待审阅`
-      : current.operation === "draft-revision" ? "已起草修订，待审阅" : "操作已完成"
+      : "操作已完成"
     : current?.state === "NOT_COMMITTED" ? "未发现本次提交记录，请确认后再操作。"
-    : current?.state === "RUNNING" && current.operation === "draft-revision" ? "正在起草修订…"
     : current?.state === "RUNNING" && !context.value ? "有 AI 操作正在进行" : "");
   const target = error.value ? errorTarget.value : context.value;
   return { text, tone, candidateId: target?.candidateId, requestId: target?.requestId ?? current?.requestId,
@@ -82,7 +80,7 @@ function remember(id: string, next?: OperationContext): void {
     try {
       const saved: unknown = JSON.parse(localStorage.getItem(`${storageKey}-context`) || "null");
       if (saved && typeof saved === "object" && "requestId" in saved && saved.requestId === id
-        && "kind" in saved && typeof saved.kind === "string" && ["import", "rewrite", "draft-revision", "accept", "defer", "reject"].includes(saved.kind)) {
+        && "kind" in saved && typeof saved.kind === "string" && ["import", "rewrite", "accept", "defer", "reject"].includes(saved.kind)) {
         context.value = { requestId: id, kind: saved.kind as OperationKind,
           ...("candidateId" in saved && typeof saved.candidateId === "string" ? { candidateId: saved.candidateId } : {}) };
       }
@@ -129,7 +127,7 @@ onMounted(async () => {
   catch (failure) { error.value = message(failure); }
 });
 onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer); });
-async function open(kind: "import" | "rewrite" | "draft-revision", selected?: InboxItem): Promise<void> {
+async function open(kind: "import" | "rewrite", selected?: InboxItem): Promise<void> {
   if (busy.value) return;
   importMenu.value?.close();
   item.value = selected ? { ...selected } : undefined;
@@ -149,18 +147,6 @@ async function open(kind: "import" | "rewrite" | "draft-revision", selected?: In
   preparing.value = false;
 }
 function selection(selected: InboxItem, requestId: string) { return { requestId, candidateId: selected.candidateId, assetId: selected.assetId, candidateVersion: selected.version }; }
-async function draftRevision(target: { assetId: string; title: string; candidateId?: string }): Promise<void> {
-  if (busy.value) return;
-  draftTarget.value = target;
-  await open("draft-revision");
-}
-async function dismissIssue(issueId: string): Promise<void> {
-  if (writing.value) return;
-  writing.value = true; error.value = ""; errorTarget.value = {};
-  try { await api.candidateAction("dismiss-issue", { issueId }); emit("refresh"); }
-  catch (failure) { error.value = message(failure); }
-  finally { writing.value = false; }
-}
 async function act(action: "accept" | "defer" | "reject", selected: InboxItem, confirmed = false): Promise<void> {
   if (writing.value) return;
   if (action === "reject" && !confirmed) { item.value = { ...selected }; modal.value = "delete"; return; }
@@ -182,7 +168,7 @@ async function act(action: "accept" | "defer" | "reject", selected: InboxItem, c
 async function submit(): Promise<void> {
   if (busy.value) return;
   const kind = modal.value;
-  if (kind !== "import" && kind !== "rewrite" && kind !== "draft-revision") return;
+  if (kind !== "import" && kind !== "rewrite") return;
   const requestId = crypto.randomUUID();
   writingContext.value = { requestId, kind, ...(kind === "rewrite" ? { candidateId: item.value?.candidateId } : {}) };
   errorTarget.value = writingContext.value;
@@ -200,9 +186,6 @@ async function submit(): Promise<void> {
       }));
       input = { requestId, provider: provider.value, instructions: instructions.value, sources,
         targets: targets.value.map(value => value === "GLOBAL" ? { scope: "GLOBAL" } : { scope: "WORKSPACE", workspace: value.slice(10) }) };
-    } else if (kind === "draft-revision") {
-      if (!draftTarget.value) throw new Error("请重新选择待修订知识");
-      input = { requestId, provider: provider.value, assetId: draftTarget.value.assetId };
     } else {
       if (!item.value || !instructions.value.trim()) throw new Error("请填写修改意见");
       input = { ...selection(item.value, requestId), provider: provider.value, instructions: instructions.value };
@@ -210,7 +193,7 @@ async function submit(): Promise<void> {
       rewriteRequestId.value = requestId;
       afterMarkdown.value = "";
     }
-    remember(requestId, { requestId, kind, ...(kind === "rewrite" ? { candidateId: item.value!.candidateId } : kind === "draft-revision" ? { candidateId: draftTarget.value?.candidateId } : {}) }); sent = true;
+    remember(requestId, { requestId, kind, ...(kind === "rewrite" ? { candidateId: item.value!.candidateId } : {}) }); sent = true;
     const response = await api.candidateAction<{ operation: AiOperation }>(kind, input);
     operation.value = response.operation;
     modal.value = null;
@@ -232,7 +215,7 @@ async function queryAfterFailure(requestId: string): Promise<void> {
     else error.value = originalError;
   } catch { error.value = `${originalError}。提交结果尚未确认，请查询结果后再操作。`; }
 }
-defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryResult, showDiff, draftRevision, dismissIssue });
+defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryResult, showDiff });
 </script>
 
 <template>
@@ -261,10 +244,7 @@ defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryRes
       <p v-for="source in operation.result?.sourceResults" :key="source.name"><strong>{{ source.name }}</strong> · {{ source.explanation }}</p>
       <p v-for="warning in operation.result?.warnings" :key="warning">{{ warning }}</p>
     </details>
-    <details v-if="operation?.state === 'SUCCEEDED' && operation.operation === 'draft-revision' && operation.result?.explanation" class="result-details">
-      <summary>查看起草说明</summary><p>{{ operation.result.explanation }}</p>
-    </details>
-    <PreviewDialog v-if="modal" :label="modal === 'delete' ? '拒绝候选' : modal === 'diff' ? '改稿对照' : modal === 'rewrite' ? 'AI 修改候选' : modal === 'draft-revision' ? '起草修订' : '导入知识'" :expanded="modal !== 'import' && expanded" :wide="modal === 'import'" @close="modal = null" @expand="expanded = !expanded">
+    <PreviewDialog v-if="modal" :label="modal === 'delete' ? '拒绝候选' : modal === 'diff' ? '改稿对照' : modal === 'rewrite' ? 'AI 修改候选' : '导入知识'" :expanded="modal !== 'import' && expanded" :wide="modal === 'import'" @close="modal = null" @expand="expanded = !expanded">
       <ImportKnowledgeForm v-if="modal === 'import'" v-model:files="files" v-model:targets="targets" v-model:provider="provider" v-model:instructions="instructions"
         :workspaces="importWorkspaces" :providers="providers" :busy="busy" :preparing="preparing" :error="error" @submit="submit" @close="modal = null" />
       <div v-else class="candidate-form">
@@ -281,16 +261,15 @@ defineExpose({ act, open, busy, writing, isRewriting, selectedFeedback, queryRes
           <button type="button" class="secondary-button" @click="modal = null">继续审阅</button>
         </template>
         <form v-else @submit.prevent="submit">
-          <p v-if="modal === 'rewrite'" class="eyebrow">候选 #{{ item?.number }}</p>
-          <h2>{{ modal === 'draft-revision' ? '起草修订' : 'AI 修改候选' }}</h2>
-          <p v-if="modal === 'draft-revision'">{{ draftTarget?.title }}：依据原文与全部待处理问题起草修订；已有候选时修改该候选。AI 读不到源码，生成后仍需你审阅并接受。</p>
+          <p class="eyebrow">候选 #{{ item?.number }}</p>
+          <h2>AI 修改候选</h2>
           <p class="muted">使用云端模型时，本次资料与选定范围内的比对知识会提交给相应模型处理。</p>
           <p>{{ item?.title }}</p>
           <label class="form-field">AI 提供方<select v-model="provider" :disabled="writing"><option v-for="value in providers" :key="value.id" :value="value.id" :disabled="!value.available">{{ value.id === 'codex' ? 'Codex CLI' : 'Claude Code CLI' }}{{ value.available ? '' : ' · 不可用' }}</option></select></label>
           <p v-for="value in providers.filter(value => !value.available)" :key="value.id" class="muted">{{ value.id }}：{{ value.reason }}</p>
-          <label v-if="modal === 'rewrite'" class="form-field">修改意见<textarea v-model="instructions" rows="5" maxlength="8000" required :disabled="writing" placeholder="说明需要补充、修正或精简的内容…"></textarea></label>
+          <label class="form-field">修改意见<textarea v-model="instructions" rows="5" maxlength="8000" required :disabled="writing" placeholder="说明需要补充、修正或精简的内容…"></textarea></label>
           <p v-if="error" role="alert" class="field-error">{{ error }}</p>
-          <div class="form-actions"><button type="button" class="secondary-button" @click="modal = null">关闭</button><button class="primary-button" type="submit" :disabled="busy || (modal === 'rewrite' && !instructions.trim()) || !providers.some(value => value.id === provider && value.available)">{{ writing ? '正在提交…' : modal === 'draft-revision' ? '开始起草' : '开始改稿' }}</button></div>
+          <div class="form-actions"><button type="button" class="secondary-button" @click="modal = null">关闭</button><button class="primary-button" type="submit" :disabled="busy || !instructions.trim() || !providers.some(value => value.id === provider && value.available)">{{ writing ? '正在提交…' : '开始改稿' }}</button></div>
         </form>
       </div>
     </PreviewDialog>

@@ -5,7 +5,6 @@ import type { CandidateService } from "../asset/candidate-service.js";
 import type { KnowledgeRepository } from "../knowledge/repository.js";
 import type { KnowledgeProjection } from "../knowledge/projection.js";
 import { loadWorkspaceConfig } from "../workspace/config.js";
-import { IssueRepository } from "../asset/issue-repository.js";
 
 export class HubAssetApplicationService {
   constructor(readonly assetSearchService: Pick<AssetSearchService, "listLibrary" | "readLibrary">,
@@ -40,8 +39,7 @@ export class SystemStatusApplicationService {
     try {
       const workspaces = (await loadWorkspaceConfig(this.dependencies.workspaceConfigPath)).workspaces.map(workspace => workspace.name);
       const counts = this.dependencies.candidateService.read((candidates, assets) => ({
-        assets: assets.list(workspaces).length, candidates: candidates.list().filter(row => row.scope === "GLOBAL" || workspaces.includes(row.workspace!)).length
-          + new IssueRepository(candidates.database).cards().filter(row => (row.scope === "GLOBAL" || workspaces.includes(row.workspace!)) && !candidates.byAsset(row.assetId)).length,
+        assets: assets.list(workspaces).length, candidates: candidates.list().filter(row => row.scope === "GLOBAL" || workspaces.includes(row.workspace!)).length,
       }));
       formalAssetCount = counts.assets; inboxAssetCount = counts.candidates;
     } catch { diagnostics.push({ code: "STORAGE_UNAVAILABLE", message: "无法读取知识或工作区配置", source: "DATABASE" }); }

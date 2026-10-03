@@ -30,7 +30,7 @@ try {
   seedAssets(databasePath, [{ assetId, type: "DOCUMENT", scope: "WORKSPACE", workspace: "alpha", title: "REST build smoke Asset", summary: "verifies compiled read-only REST", retrievalTerms: ["rest-term-only", "接口检索", "构建验证"], bodyMarkdown: "compiled-rest-token" }]);
   // The actual server must repair on a writable connection before opening read-only search.
   const incomplete = openDatabase(databasePath);
-  try { incomplete.exec("DROP TABLE asset_issue; DROP TABLE retrieval_check; DROP TABLE asset_fts; DROP TABLE asset_candidate; DROP INDEX recall_item_asset"); }
+  try { incomplete.exec("DROP TABLE asset_fts; DROP TABLE asset_candidate; DROP INDEX recall_item_asset"); }
   finally { incomplete.close(); }
 
   child = spawn(process.execPath, [join(serverRoot, "dist", "main.js")], {
@@ -89,19 +89,6 @@ try {
     headers: { origin, "content-type": "application/json" },
     body: "{}",
   }), 403, "WRITE_SESSION_INVALID");
-  for (const action of ["dismiss-issue", "draft-revision"]) await expectError(fetch(`${origin}/api/inbox/${action}`, {
-    method: "POST", headers: { origin, "content-type": "application/json" }, body: "{}",
-  }), 403, "WRITE_SESSION_INVALID");
-  const { IssueService } = await import("../dist/asset/issue-service.js");
-  new IssueService(databasePath).record({ sessionId: "smoke", turnId: "turn", knowledgeIssues: [{ assetId, kind: "INCOMPLETE", detail: "隔离样本问题" }] }, "CODEX");
-  const inbox = await fetch(`${origin}/api/inbox`).then(response => response.json());
-  assert.equal(inbox.data.issueCards.length, 1); assert.equal(inbox.data.issueCards[0].assetId, assetId);
-  const overview = await fetch(`${origin}/api/overview`).then(response => response.json());
-  assert.equal(overview.data.scopes.reduce((n, scope) => n + scope.inboxCount, 0), 1);
-  const { data: { token } } = await fetch(`${origin}/api/inbox/session`).then(response => response.json());
-  const dismissed = await fetch(`${origin}/api/inbox/dismiss-issue`, { method: "POST", headers: { origin, "content-type": "application/json", "x-hub-write-token": token },
-    body: JSON.stringify({ issueId: inbox.data.issueCards[0].issues[0].issueId }) });
-  assert.equal(dismissed.status, 200);
   await expectError(
     fetch(`${origin}/api/assets`, { headers: { origin: "http://example.invalid" } }),
     403,

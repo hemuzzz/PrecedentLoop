@@ -11,7 +11,6 @@ import type {
   AssetListFilters,
   AssetType,
   InboxItem,
-  IssueCard,
 } from "../api/types.js";
 import UiIcon from "../components/UiIcon.vue";
 import type { PresentedError } from "./view-helpers.js";
@@ -27,7 +26,6 @@ import PreviewDialog from "../components/PreviewDialog.vue";
 import FilterMenu from "../components/FilterMenu.vue";
 import CandidateManager from "../components/CandidateManager.vue";
 import CandidateSummary from "../components/CandidateSummary.vue";
-import IssueList from "../components/IssueList.vue";
 
 const emit = defineEmits<{ inboxChanged: [] }>();
 
@@ -104,9 +102,9 @@ function setLibraryType(type: "" | AssetType) {
   applyFilters();
 }
 const bucketCounts = computed(() => ({
-  PENDING: inboxItems.value.filter(item => (item.status ?? "PENDING") === "PENDING").length + issueCards.value.length,
+  PENDING: inboxItems.value.filter(item => (item.status ?? "PENDING") === "PENDING").length,
   DEFERRED: inboxItems.value.filter(item => item.status === "DEFERRED").length,
-  ALL: inboxItems.value.length + issueCards.value.length,
+  ALL: inboxItems.value.length,
 }));
 
 const filters = reactive({
@@ -145,7 +143,6 @@ const detailError = ref<HubApiError>();
 const detailTab = ref<DetailTab>("RENDERED");
 
 const inboxItems = ref<InboxItem[]>([]);
-const issueCards = ref<IssueCard[]>([]);
 let preservingInboxDetails = false;
 const candidateManager = ref<InstanceType<typeof CandidateManager>>();
 const inboxBucket = ref<"PENDING" | "DEFERRED" | "ALL">("PENDING");
@@ -154,11 +151,6 @@ const inboxWorkspace = ref<string | null>("");
 const inboxQuery = ref("");
 const inboxPageSize = ref(20);
 const inboxPage = ref(1);
-const filteredIssueCards = computed(() => inboxBucket.value === "DEFERRED" ? [] : issueCards.value
-  .filter(item => !inboxType.value || item.type === inboxType.value)
-  .filter(item => inboxWorkspace.value === "" || (inboxWorkspace.value === null ? item.scope === "GLOBAL" : item.workspace === inboxWorkspace.value))
-  .filter(item => !inboxQuery.value.trim() || [item.title, ...item.issues.map(issue => `${issue.detail}\n${issue.evidence ?? ''}\n${issue.queries?.join(' ') ?? ''}`)]
-    .some(value => value.toLocaleLowerCase().includes(inboxQuery.value.trim().toLocaleLowerCase()))));
 const filteredInbox = computed(() => inboxItems.value
   .filter(item => inboxBucket.value === "ALL" || (item.status ?? "PENDING") === inboxBucket.value)
   .filter(item => !inboxType.value || item.type === inboxType.value)
@@ -449,7 +441,6 @@ async function loadInbox({ preserveDetails = false }: { preserveDetails?: boolea
     }
     preservingInboxDetails = preserveDetails;
     inboxItems.value = result.items;
-    issueCards.value = result.issueCards ?? [];
     emit("inboxChanged");
     if (preserveDetails) {
       if (selectedInboxItem.value) selectedInboxItem.value = result.items.find(item => item.assetId === selectedInboxItem.value?.assetId) ?? selectedInboxItem.value;
@@ -462,7 +453,6 @@ async function loadInbox({ preserveDetails = false }: { preserveDetails?: boolea
     }
     if (!preserveDetails) {
       inboxItems.value = [];
-      issueCards.value = [];
       selectedInboxItem.value = undefined;
     }
     inboxError.value = asHubApiError(error);
@@ -702,23 +692,17 @@ function presentError(
         </template>
       </CandidateManager>
       <section ref="listScroll" class="list-scroll candidate-scroll" :aria-busy="inboxLoading" aria-label="知识候选列表">
-        <div v-if="inboxLoading && !inboxItems.length && !issueCards.length" class="state-panel" role="status">正在读取知识候选…</div>
+        <div v-if="inboxLoading && !inboxItems.length" class="state-panel" role="status">正在读取知识候选…</div>
         <div v-else-if="inboxError && inboxErrorCopy" class="state-panel" role="alert">
           <strong>{{ inboxErrorCopy.title }}</strong>
           <p>{{ inboxErrorCopy.detail }}</p>
           <button type="button" class="quiet-button" @click="loadInbox()">重试</button>
         </div>
-        <div v-else-if="!inboxItems.length && !issueCards.length" class="state-panel">
+        <div v-else-if="!inboxItems.length" class="state-panel">
           <strong>知识候选已清空</strong>
           <p>暂无待处理的知识候选。</p>
         </div>
         <div v-else class="candidate-list">
-          <article v-for="card in filteredIssueCards" :key="`issues-${card.assetId}`" class="candidate-card">
-            <div class="candidate-card-head"><span class="pill">待修订问题</span><span class="pill">{{ card.workspace ?? '全局' }}</span><span class="candidate-note">当前版本 {{ card.version }}</span></div>
-            <h3>{{ card.title }}</h3>
-            <IssueList :issues="card.issues" dismissible :disabled="!!candidateManager?.writing" @dismiss="candidateManager?.dismissIssue($event)" />
-            <button type="button" class="primary-button" :disabled="candidateManager?.busy" @click="candidateManager?.draftRevision(card)">起草修订</button>
-          </article>
           <article v-for="item in inboxPageItems" :key="item.assetId" class="candidate-card" :class="{ selected: selectedInboxItem?.assetId === item.assetId }" @click="openInbox(item)">
             <div class="candidate-card-head">
               <span class="pill">候选 #{{ item.number }}</span>
@@ -733,12 +717,6 @@ function presentError(
             <h3><button type="button" class="candidate-title" :aria-current="selectedInboxItem?.assetId === item.assetId ? 'true' : undefined" @click.stop="openInboxDetail(item)">{{ item.title }}</button></h3>
             <p class="candidate-summary">{{ item.summary }}</p>
             <p class="candidate-summary">检索词：{{ item.retrievalTerms.join(' · ') || '尚未填写' }}</p>
-            <section v-if="item.issues?.length" @click.stop>
-              <h4>接受后将关闭的问题</h4>
-              <p class="candidate-summary">包含起草之后报告的问题，请确认修订是否已处理。</p>
-              <IssueList :issues="item.issues" dismissible :disabled="!!candidateManager?.writing" @dismiss="candidateManager?.dismissIssue($event)" />
-              <button v-if="item.issues.some(issue => issue.status === 'OPEN')" type="button" class="secondary-button" :disabled="candidateManager?.busy" @click="openInbox(item); candidateManager?.draftRevision(item)">起草修订</button>
-            </section>
             <div v-if="selectedInboxItem?.assetId === item.assetId && candidateManager?.selectedFeedback?.text" class="candidate-feedback" :class="candidateManager.selectedFeedback.tone" :role="candidateManager.selectedFeedback.tone === 'error' ? 'alert' : 'status'">
               <UiIcon :name="candidateManager.selectedFeedback.tone === 'success' ? 'check' : candidateManager.selectedFeedback.tone === 'error' ? 'warning' : 'info'" />
               <span>{{ candidateManager.selectedFeedback.text }}</span>
@@ -756,7 +734,7 @@ function presentError(
               <button v-if="item.candidateId" type="button" class="secondary-button danger-text" :disabled="candidateLocked(item)" @click="cardAct('reject', item)">拒绝</button>
             </div>
           </article>
-          <div v-if="!inboxPageItems.length && !filteredIssueCards.length && (inboxItems.length || issueCards.length)" class="state-panel"><strong>没有符合条件的候选或问题</strong><p>试试其他关键词，或调整筛选条件。</p><button type="button" class="quiet-button" @click="inboxType = ''; inboxWorkspace = ''; inboxBucket = 'ALL'; inboxQuery = ''">清除筛选与搜索</button></div>
+          <div v-if="!inboxPageItems.length && inboxItems.length" class="state-panel"><strong>没有符合条件的候选</strong><p>试试其他关键词，或调整筛选条件。</p><button type="button" class="quiet-button" @click="inboxType = ''; inboxWorkspace = ''; inboxBucket = 'ALL'; inboxQuery = ''">清除筛选与搜索</button></div>
           <p v-if="inboxPageItems.length" class="candidate-hint">接受：确认当前版本并入库 · 暂存：稍后处理 · 拒绝：标记为已拒绝。AI 改稿保存后仍需你接受。</p>
         </div>
       </section>

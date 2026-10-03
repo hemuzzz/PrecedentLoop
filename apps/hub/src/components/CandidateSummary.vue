@@ -4,7 +4,6 @@ import MarkdownIt from "markdown-it";
 import markdownItCjkFriendly from "markdown-it-cjk-friendly";
 import type { InboxItem } from "../api/types.js";
 import UiIcon from "./UiIcon.vue";
-import IssueList from "./IssueList.vue";
 import { markdownPresentation } from "../markdown-presentation.js";
 
 const props = defineProps<{ item: InboxItem }>();
@@ -36,11 +35,6 @@ async function copyCode(event: MouseEvent): Promise<void> {
 
 <template>
   <div class="candidate-summary">
-    <section v-if="item.intent === 'REVISION' && item.issues?.length" class="summary-section">
-      <h3>接受后将关闭的问题</h3>
-      <p>包含起草之后报告的问题，请确认本次修订是否已处理。</p>
-      <IssueList :issues="item.issues" />
-    </section>
     <section class="summary-section">
       <h3><UiIcon name="document" />摘要</h3>
       <p>{{ item.summary || '这份候选尚未填写摘要，可查看下方正文。' }}</p>

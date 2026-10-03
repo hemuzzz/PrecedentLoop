@@ -49,7 +49,7 @@ export class HubApiClient {
   aiSettings(): Promise<AiConfiguration> { return this.#get("/api/inbox/ai-settings"); }
   testAi(provider: "codex" | "claude"): Promise<AiTestResult> { return this.candidateAction("test", { provider }); }
   operation(requestId?: string): Promise<{ operation: AiOperation | null }> { return this.#get(`/api/inbox/operation${requestId ? `?requestId=${encodeURIComponent(requestId)}` : ""}`); }
-  async candidateAction<T = unknown>(action: "accept" | "defer" | "reject" | "import" | "rewrite" | "draft-revision" | "dismiss-issue" | "workspaces" | "test", input: object): Promise<T> {
+  async candidateAction<T = unknown>(action: "accept" | "defer" | "reject" | "import" | "rewrite" | "workspaces" | "test", input: object): Promise<T> {
     this.#writeToken ??= (await this.#get<{ token: string }>("/api/inbox/session")).token;
     try { return await this.#request(`/api/inbox/${action}`, { method: "POST", headers: { "content-type": "application/json", "x-hub-write-token": this.#writeToken }, body: JSON.stringify(input) }); }
     catch (error) { if (error instanceof HubApiError && error.code === "WRITE_SESSION_INVALID") this.#writeToken = undefined; throw error; }

@@ -25,11 +25,11 @@ export async function runPrecedentHook(args = process.argv.slice(2)): Promise<vo
   const fail = (error: unknown) => {
     logFailure(userData, error);
     if (recording) {
-      process.stderr.write("Precedent Loop: assessment not recorded.\nFormat: sessionId, turnId, outcome (NO_INCREMENT|CANDIDATE|FAILED|SKIPPED), reason, references (required for CANDIDATE); optional knowledgeIssues: [{assetId, kind, detail, evidence?, missedQueries (required for MISSED)}].\n");
+      process.stderr.write("Precedent Loop: assessment not recorded.\nFormat: sessionId, turnId, outcome (NO_INCREMENT|CANDIDATE|FAILED|SKIPPED), reason, references (required for CANDIDATE).\n");
       process.exitCode = 1;
     }
   };
-  // Set before reading stdin/importing SQLite; record includes a bounded database write.
+  // Set before reading stdin and loading the selected handler.
   const timer = setTimeout(() => {
     fail(new Error("Hook timeout"));
     process.exit(recording ? 1 : 0);
@@ -67,7 +67,7 @@ export async function runPrecedentHook(args = process.argv.slice(2)): Promise<vo
     } else {
       const { handleCaptureHook, recordAssessment } = await import("./capture-assessment.js");
       if (recording) {
-        output = JSON.stringify(await recordAssessment(configuration.captureCachePath, input, hostName, configuration.databasePath));
+        output = JSON.stringify(await recordAssessment(configuration.captureCachePath, input, hostName));
       } else output = JSON.stringify(await handleCaptureHook(input, configuration.captureCachePath, hostName, onError));
     }
     if (!recording) {
