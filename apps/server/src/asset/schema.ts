@@ -20,7 +20,7 @@ export const storedRetrievalTermsSchema = z.array(retrievalTermSchema).max(16).o
 });
 export const retrievalTermsSchema = storedRetrievalTermsSchema.min(3)
   .refine(values => values.length >= 3, "去重后至少需要 3 个检索词")
-  .describe("完整检索词列表，3–16 个：代码标识（类名、表名、接口、错误码、文件名）、中文业务叫法、同义词或缩写，不写整句；每个 2–64 个 Unicode 字符。");
+  .describe("完整检索词列表，3–16 个：代码标识（类名、表名、接口、错误码、文件名）、中文业务叫法、同义词或缩写，不写整句；每个 2–64 个 Unicode 字符。不要过宽：不用单独的普通英文词（如 current、operator）或跨很多条知识通用的大词；优先写具体标识或组合词，如 currentVersion、candidate_update、候选版本冲突。");
 
 const idGenerator: IdGenerator = new SnowflakeIdGenerator();
 
