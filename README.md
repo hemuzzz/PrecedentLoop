@@ -1,7 +1,3 @@
-
-https://github.com/user-attachments/assets/4a7a85be-fd7f-4b86-819f-5b85abb3538c
-
-https://github.com/user-attachments/assets/01d46970-4e44-4b0c-9411-eda686b6ea12
 # Precedent Loop
 
 **Turn experience into precedent.**
