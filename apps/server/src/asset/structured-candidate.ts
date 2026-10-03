@@ -71,7 +71,7 @@ export function normalizeStructuredContent(input: StructuredContent): Structured
 export const candidateUpdateInputSchema = z.object({
   capabilityIds: capabilityIdsSchema.max(1).describe("必须对应被修改候选的范围：全局候选传 []，工作区候选恰好传该工作区的能力。"),
   candidateId: candidateSelectionSchema.shape.candidateId.describe("要修改的待审候选业务 ID（cnd…）；number 仅用于显示候选 #N。"),
-  candidateVersion: versionSchema.describe("REVIEW_REQUIRED 附正文清单项中的 candidateVersion，或 candidate_prepare／candidate_update 返回的 version；"),
+  candidateVersion: versionSchema.describe("REVIEW_REQUIRED 附正文清单项或 REVISION_BLOCKED 的 blockingCandidate 中的 candidateVersion，或 candidate_prepare／candidate_update 返回的 version；"),
   title: contentFieldsSchema.shape.title.describe("修改后的完整标题。"),
   summary: contentFieldsSchema.shape.summary.describe("修改后的完整摘要，与正文结论一致。"),
   retrievalTerms: retrievalTermsSchema,

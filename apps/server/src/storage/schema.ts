@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 
 export const BASELINE_SCHEMA_SQL = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
 export const PERSISTENT_TABLES = ["asset", "asset_fts", "asset_candidate", "write_operation", "workspace_capability",
-  "recall_operation", "recall_item", "read_operation", "used_event", "asset_issue"] as const;
+  "recall_operation", "recall_item", "read_operation", "used_event"] as const;
 export class DatabaseSchemaError extends Error {
   constructor(readonly code: "DATABASE_SCHEMA_INVALID" | "DATABASE_NOT_EMPTY", message: string) {
     super(message); this.name = "DatabaseSchemaError";

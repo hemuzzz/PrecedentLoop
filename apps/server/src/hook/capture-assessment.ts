@@ -3,7 +3,6 @@ import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import type { IssueRecordResult } from "../asset/issue-service.js";
 
 export const CAPTURE_CACHE_ENV = "PRECEDENT_LOOP_CAPTURE_CACHE_PATH";
 export const CAPTURE_COMMAND_ENV = "PRECEDENT_LOOP_CAPTURE_COMMAND";
@@ -20,9 +19,10 @@ const cachedAssessmentSchema = turnIdentitySchema.extend({
 }).strict().refine(value => value.outcome !== "CANDIDATE" || !!value.references?.length, {
   message: "CANDIDATE requires a candidate or read-only suggestion reference",
 });
-export type Assessment = z.infer<typeof assessmentSchema>;
+export type Assessment = z.infer<typeof cachedAssessmentSchema>;
+// Old sessions may still submit this field; accept any value and never persist it.
 export const assessmentSchema = cachedAssessmentSchema.safeExtend({ knowledgeIssues: z.unknown().optional() }).strict();
-export interface AssessmentResult { recorded: true; issues?: IssueRecordResult | { recorded: 0; error: "ISSUES_NOT_RECORDED" | "ISSUES_INVALID" } }
+export interface AssessmentResult { recorded: true }
 export type CaptureHookOutput = { systemMessage?: string };
 export type HookHost = "codex" | "claude";
 
@@ -78,8 +78,8 @@ async function readSmallFile(path: string, limit: number): Promise<string | null
   } finally { await file.close(); }
 }
 
-export async function recordAssessment(cachePath: string, input: unknown, host: HookHost = "codex", databasePath?: string): Promise<AssessmentResult> {
-  const { knowledgeIssues, ...assessment } = assessmentSchema.parse(input);
+export async function recordAssessment(cachePath: string, input: unknown, host: HookHost = "codex"): Promise<AssessmentResult> {
+  const { knowledgeIssues: _ignored, ...assessment } = assessmentSchema.parse(input);
   const bytes = JSON.stringify(assessment) + "\n";
   if (Buffer.byteLength(bytes) > ASSESSMENT_MAX_BYTES) throw new Error("Assessment too large");
   const directory = assessmentDirectory(cachePath, assessment, host);
@@ -92,13 +92,7 @@ export async function recordAssessment(cachePath: string, input: unknown, host: 
   } finally {
     await unlink(temporary).catch(error => { if (!hasCode(error, "ENOENT")) throw error; });
   }
-  if (knowledgeIssues === undefined) return { recorded: true };
-  if (!Array.isArray(knowledgeIssues)) return { recorded: true, issues: { recorded: 0, error: "ISSUES_INVALID" } };
-  try {
-    if (!databasePath || !isAbsolute(databasePath)) throw new Error("Database path unavailable");
-    const { IssueService } = await import("../asset/issue-service.js");
-    return { recorded: true, issues: new IssueService(databasePath).record({ ...assessment, knowledgeIssues }, host === "codex" ? "CODEX" : "CLAUDE") };
-  } catch { return { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } }; }
+  return { recorded: true };
 }
 
 export const CHECK_UNAVAILABLE = "Precedent Loop：知识评估检查不可用（标识、缓存或输入异常）；本轮允许结束，未判定无增量。";

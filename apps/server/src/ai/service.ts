@@ -10,8 +10,7 @@ import { RepositoryOperationError } from "../asset/errors.js";
 import { providerAvailability, readAiConfiguration, runAiCli, type AiProvider, type CliRunner } from "./cli.js";
 import { loadWorkspaceConfig } from "../workspace/config.js";
 import { initializeCodexWorkspaces } from "../workspace/codex-projects.js";
-import { assetIdSchema, retrievalTermsSchema } from "../asset/schema.js";
-import { IssueService, type IssueDraft } from "../asset/issue-service.js";
+import { retrievalTermsSchema } from "../asset/schema.js";
 
 const cleanText = z.string().refine(value => !/[\u0000\uD800-\uDFFF]/u.test(value), "文本不是有效的无损 Unicode");
 const providerId = z.enum(["codex", "claude"]);
@@ -21,7 +20,6 @@ export const importSchema = z.object({
   targets: z.array(candidateTargetSchema).max(1001).default([]), instructions: cleanText.max(8_000).default(""),
 }).strict();
 export const rewriteSchema = candidateSelectionSchema.extend({ provider: providerId, instructions: cleanText.trim().min(1).max(8_000) }).strict();
-export const draftRevisionSchema = z.object({ requestId: requestIdSchema, provider: providerId, assetId: assetIdSchema }).strict();
 function nullableField<T extends z.ZodType>(schema: z.ZodOptional<T>) {
   return schema.unwrap().nullable().describe(schema.description ?? "");
 }
@@ -47,9 +45,8 @@ export const importOutputSchema = z.object({ schemaVersion: z.literal(1), candid
 export const rewriteOutputSchema = z.object({ schemaVersion: z.literal(1), content: contentFieldsSchema, explanation: z.string().max(2_000) }).strict();
 type ImportInput = z.infer<typeof importSchema>;
 type RewriteInput = z.infer<typeof rewriteSchema>;
-type DraftInput = z.infer<typeof draftRevisionSchema>;
-type AiInput = ImportInput | RewriteInput | DraftInput;
-type AiOperation = "import" | "rewrite" | "draft-revision";
+type AiInput = ImportInput | RewriteInput;
+type AiOperation = "import" | "rewrite";
 export interface AiOperationStatus {
   requestId: string; state: "RUNNING" | "SUCCEEDED" | "FAILED" | "NOT_COMMITTED";
   operation?: string; result?: unknown; error?: { code: string; message: string };
@@ -124,13 +121,12 @@ export class AiService {
     // mean the next operation can start, so the active run answers first.
     if (this.#run?.status.requestId === requestId && this.#run.status.state === "RUNNING") return this.#run.status;
     const receipt = await this.candidates.receipt(requestId);
-    if (receipt) return { requestId, state: "SUCCEEDED", operation: receipt.result && typeof receipt.result === "object" && "operation" in receipt.result && receipt.result.operation === "draft-revision" ? "draft-revision" : receipt.operation, result: receipt.result };
+    if (receipt) return { requestId, state: "SUCCEEDED", operation: receipt.operation, result: receipt.result };
     if (this.#run?.status.requestId === requestId) return this.#run.status;
     return { requestId, state: "NOT_COMMITTED" };
   }
   async import(input: unknown): Promise<AiOperationStatus> { return this.start("import", importSchema.parse(input)); }
   async rewrite(input: unknown): Promise<AiOperationStatus> { return this.start("rewrite", rewriteSchema.parse(input)); }
-  async draftRevision(input: unknown): Promise<AiOperationStatus> { return this.start("draft-revision", draftRevisionSchema.parse(input)); }
   async close(): Promise<void> {
     this.#closing = true;
     if (this.#test) { this.#test.controller.abort(); await this.#test.done; }
@@ -175,7 +171,6 @@ export class AiService {
       let targets: CandidateTarget[] = [];
       let pendingRefs = new Map<string, number>();
       let pendingComparisonLimited = false;
-      let draft: ReturnType<IssueService["draftInput"]> | undefined;
       if (operation === "import") {
         const batch = input as ImportInput;
         if (new Set(batch.targets.map(targetKey)).size !== batch.targets.length) throw new RepositoryOperationError("TARGET_INVALID", "目标范围不能重复");
@@ -197,16 +192,6 @@ export class AiService {
           existingAssets: references.references.map((asset, index) => ({ existingAssetRef: String(index), type: asset.type,
             targetKey: String(targets.findIndex(target => matchesTarget(target, asset))), content: displayContent(asset) })),
           comparisonLimited: references.limited, pendingCandidates, pendingComparisonLimited };
-      } else if (operation === "draft-revision") {
-        draft = new IssueService(this.candidates.options.databasePath).draftInput((input as DraftInput).assetId);
-        const instructions = `请根据以下全部待处理问题起草完整修订。你读不到源码，只能依据问题与原文，无法确认的内容不要编造。\n${JSON.stringify(draft.issues.map(issue => ({ kind: issue.kind, detail: issue.detail, evidence: issue.evidence, missedQueries: issue.queries })))}`;
-        if (draft.candidate) {
-          const snapshot = await this.candidates.rewriteInput({ requestId: input.requestId, candidateId: draft.candidate.candidateId, assetId: draft.asset.assetId, candidateVersion: draft.candidate.version });
-          payload = { operation: "rewrite", instructions, candidate: displayContent(snapshot.candidate), baseline: displayContent(draft.asset) };
-        } else {
-          await this.candidates.validateTargets([draft.asset.scope === "GLOBAL" ? { scope: "GLOBAL" } : { scope: "WORKSPACE", workspace: draft.asset.workspace! }]);
-          payload = { operation, instructions, baseline: displayContent(draft.asset) };
-        }
       } else {
         const revision = input as RewriteInput;
         const snapshot = await this.candidates.rewriteInput(revision);
@@ -278,14 +263,7 @@ export class AiService {
         const parsed = rewriteOutputSchema.parse(output);
         checkStructuredContent(parsed.content);
         run.committing = true;
-        if (draft) {
-          const issueDraft: IssueDraft = { assetId: draft.asset.assetId, assetVersion: draft.asset.version, issueIds: draft.issues.map(issue => issue.issueId), requestHash: run.hash, explanation: parsed.explanation };
-          if (draft.candidate) result = await this.candidates.rewrite({ requestId: input.requestId, candidateId: draft.candidate.candidateId, assetId: draft.asset.assetId, candidateVersion: draft.candidate.version }, parsed.content, input, "rewrite", issueDraft);
-          else result = await this.candidates.prepare(input.requestId, [{ ...parsed.content, type: draft.asset.type,
-            target: draft.asset.scope === "GLOBAL" ? { scope: "GLOBAL" } : { scope: "WORKSPACE", workspace: draft.asset.workspace! },
-            existingAssetId: draft.asset.assetId, baseVersion: draft.asset.version }], { operation: "prepare", requestInput: input, issueDraft,
-            sourceResults: [{ explanation: parsed.explanation }] });
-        } else result = await this.candidates.rewrite(input as RewriteInput, parsed.content, input);
+        result = await this.candidates.rewrite(input as RewriteInput, parsed.content, input);
       }
       finalStatus = { requestId: input.requestId, state: "SUCCEEDED", operation, result };
     } catch (error) {

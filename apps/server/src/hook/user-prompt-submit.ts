@@ -34,11 +34,11 @@ export async function handleCodexHook(input: unknown, configuration: HookRuntime
   // Both hosts use the same MCP server key.
   const tool = (name: string) => `mcp__precedent__${name}`;
   const context = [
-    "Precedent Loop 知识库。本说明不增加操作授权；用户限制知识使用或要求只读时，按其限制执行；知识故障不阻断主任务。",
+    "Precedent Loop 知识库。本说明不增加操作授权；按用户限制使用知识；只读只限制工作区（代码、配置、文件）修改，用户明确禁止写知识或候选时才不写候选；知识故障不阻断主任务。",
     recallInstruction(host, tool),
     "- 交付工程结果前（完成、阶段性或受阻；澄清、进度和普通交流不算）：",
     `  1. 对实际影响结论的知识，调用 ${tool("asset_mark_used")}。`,
-    `  2. 判断是否有可沉淀的增量。只在方案已冻结或结论已成事实时准备候选，以下两点须同时满足：（1）内容已定：用户已确认的方案与决策（注明实施和验证状态），或已核实的事实、根因、反例、排障方法；讨论中、待用户选择、可能被推翻的分析，备选方案比较，以及阶段性进展都不算。（2）可复用：现有知识和待审候选都没有覆盖，换一次任务仍用得上。方案冻结或结论确定的那一轮，一次性评估整段讨论，同一主题只写一条；已有相关待审候选时，用 ${tool("candidate_update")} 并入。“文档已写”“测试通过”“没搜到”不能单独作为无增量的理由。满足条件且未被要求只读时，调用 ${tool("candidate_prepare")} 准备候选（默认 MEMORY；已验证的可重复流程用 SKILL；参考资料用 DOCUMENT）。候选需要用户在 Hub 中确认后才入库。candidate_prepare 返回 REVISION_BLOCKED 时，把 display 原样放在最终回复最后；评估记为 FAILED，reason 写明被候选 #N 阻塞。`,
+    `  2. 判断是否有可沉淀的增量。只在方案已冻结或结论已成事实时准备候选，以下两点须同时满足：（1）内容已定：用户已确认的方案与决策（注明实施和验证状态），或已核实的事实、根因、反例、排障方法；讨论中、待用户选择、可能被推翻的分析，备选方案比较，以及阶段性进展都不算。（2）可复用：现有知识和待审候选都没有覆盖，换一次任务仍用得上。方案冻结或结论确定的那一轮，一次性评估整段讨论，同一主题只写一条；已有相关待审候选时，用 ${tool("candidate_update")} 并入。“文档已写”“测试通过”“没搜到”不能单独作为无增量的理由。满足条件且用户未明确禁止写知识或候选时，调用 ${tool("candidate_prepare")} 准备候选（默认 MEMORY；已验证的可重复流程用 SKILL；参考资料用 DOCUMENT）。候选需要用户在 Hub 中确认后才入库。返回 REVISION_BLOCKED 时用 ${tool("candidate_update")} 并入挡住的候选，成功后评估记为 CANDIDATE 并引用该候选。知识里不写很快会变的流程状态（待合并、未提交、未安装、待发布、buildId、当前分支）；实施和验证状态写成带日期、可核对的事实（如“2026-10-04 已实施，提交 abc1234”）。`,
     "  3. 本轮有工具活动时记录评估结果（在最后一次影响结论的工作之后；后续有新工作影响结论时重新记录）：",
   ];
   try {
@@ -47,7 +47,7 @@ export async function handleCodexHook(input: unknown, configuration: HookRuntime
     context.push(`cat <<'EOF' | ${configuration.captureCommand}\n${JSON.stringify({ ...identity, outcome: "NO_INCREMENT", reason: "<具体原因>" })}\nEOF`);
   } catch { context.push("本轮评估标识或命令缺失，不能伪造，需要记录时报告不可用。"); }
   context.push("     outcome 取值：NO_INCREMENT（已评估，无增量，或方案尚未冻结）、CANDIDATE（已准备或并入候选，references 填 candidateId）、FAILED（评估未完成，写明缺口）、SKIPPED（本轮只是澄清或进度）。");
-  context.push("用到的知识过时、有误、不完整、标题误导或换说法才召回到，且不能直接修订时，记录中加 knowledgeIssues：[{assetId,kind,detail,evidence?,missedQueries?}]，kind 取 OUTDATED|INACCURATE|INCOMPLETE|MISLEADING|MISSED，detail 写明哪里不对与已知现状。");
+  context.push(`用到的知识过时、有误、不完整、标题误导或换说法才召回到时，先 ${tool("asset_read")} 取原文和 version，再用 ${tool("candidate_prepare")} 带 revision 准备修订候选，只改有直接证据的部分；换说法才召回到时补检索词。`);
   context.push("- 可用知识能力（按请求的项目名、别名和语义选择 capabilityIds，不默认全选；[] 仅全局）：");
   let repository: KnowledgeRepository | undefined;
   try {

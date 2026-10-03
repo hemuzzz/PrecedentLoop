@@ -8,8 +8,6 @@ import { checkStructuredContent } from "./structured-candidate-checks.js";
 import { AssetRepository, type AssetRecord } from "./asset-repository.js";
 import { CandidateRepository, type CandidateRecord, type WriteOperation } from "./candidate-repository.js";
 import { RepositoryOperationError } from "./errors.js";
-import { IssueRepository, type AssetIssue } from "./issue-repository.js";
-import type { IssueDraft } from "./issue-service.js";
 
 export const requestIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/u);
 export const versionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -31,7 +29,7 @@ export type PrepareItem = z.infer<typeof prepareItemSchema>;
 export type CandidateSelection = z.infer<typeof candidateSelectionSchema>;
 export interface CandidateSummary { candidateId: string; number: number; assetId: string; version: number; intent: "NEW" | "REVISION" }
 export interface CandidateBatchResult { candidates: CandidateSummary[]; count: number; warnings: string[]; sourceResults: unknown[] }
-export type ManagedInboxItem = CandidateRecord & { knowledgeNumber: number | null; baselineMarkdown?: string; currentFormalVersion?: number; issues: AssetIssue[] };
+export type ManagedInboxItem = CandidateRecord & { knowledgeNumber: number | null; baselineMarkdown?: string; currentFormalVersion?: number };
 export interface CandidateOptions { databasePath: string; workspaceConfigPath: string }
 
 export class CandidateService {
@@ -41,15 +39,13 @@ export class CandidateService {
   async list(bucket?: "PENDING" | "DEFERRED") {
     const config = await loadWorkspaceConfig(this.options.workspaceConfigPath);
     return this.read((repository, assets) => {
-      const cards = new IssueRepository(repository.database).cards().filter(row => row.scope === "GLOBAL" || config.workspaces.some(workspace => workspace.name === row.workspace));
       const items: ManagedInboxItem[] = repository.list().filter(row => (!bucket || row.status === bucket) &&
         (row.scope === "GLOBAL" || config.workspaces.some(workspace => workspace.name === row.workspace))).map(row => {
         const formal = assets.get(row.assetId);
-        return { ...row, knowledgeNumber: formal?.knowledgeNumber ?? null, issues: cards.find(card => card.assetId === row.assetId)?.issues ?? [],
+        return { ...row, knowledgeNumber: formal?.knowledgeNumber ?? null,
           ...(formal ? { baselineMarkdown: displayContent(formal), currentFormalVersion: formal.version } : {}) };
       });
-      return { items, issueCards: cards.filter(card => !repository.byAsset(card.assetId)),
-        diagnostics: [], managed: true };
+      return { items, diagnostics: [], managed: true };
     });
   }
   async pendingCandidates(): Promise<Array<{ record: CandidateRecord }>> {
@@ -65,7 +61,6 @@ export class CandidateService {
     warnings?: string[]; sourceResults?: unknown[]; requestInput?: unknown; operation?: "prepare" | "import";
     beforeWrite?: (repository: CandidateRepository, assets: AssetRepository) => unknown;
     itemWarning?: (index: number, assets: AssetRepository) => string | undefined;
-    issueDraft?: IssueDraft;
   } = {}) {
     requestIdSchema.parse(requestId);
     const items = z.array(prepareItemSchema).max(32).parse(rawItems);
@@ -74,11 +69,6 @@ export class CandidateService {
     const operation = details.operation ?? (details.requestInput === undefined ? "prepare" : "import");
     return this.write(requestId, operation, details.requestInput ?? { items, details }, (repository, assets): CandidateBatchResult | RevisionBlocked | ReviewRequired => {
       this.validateTargetsAtCommit(items.map(item => item.target));
-      if (details.issueDraft) {
-        const draft = details.issueDraft;
-        if (items.length !== 1 || items[0]!.existingAssetId !== draft.assetId || assets.get(draft.assetId)?.version !== draft.assetVersion || repository.byAsset(draft.assetId))
-          throw new RepositoryOperationError("VERSION_CONFLICT", "知识或候选已变化，请重新起草修订");
-      }
       const decision = details.beforeWrite?.(repository, assets);
       if (decision) return decision as ReviewRequired;
       const warnings = [...(details.warnings ?? [])];
@@ -94,7 +84,7 @@ export class CandidateService {
         const blocked = current && repository.byAsset(current.assetId);
         if (current && blocked) {
           const result = revisionBlocked(current, blocked);
-          if (operation === "import") { warnings.push(result.display); continue; }
+          if (operation === "import") { warnings.push(`候选《${item.title}》未写入：已有未处理的候选 #${blocked.number}（${blocked.status === "DEFERRED" ? "暂存" : "待审"}）。`); continue; }
           return result;
         }
         candidates.push(summary(repository.insert({ candidateId: this.#ids.next("cnd"),
@@ -102,9 +92,8 @@ export class CandidateService {
           type: item.type, scope: item.target.scope, workspace: item.target.scope === "GLOBAL" ? null : item.target.workspace,
           title: item.title, summary: item.summary, retrievalTerms: item.retrievalTerms, bodyMarkdown: item.bodyMarkdown, baseVersion: item.baseVersion ?? null })));
       }
-      if (details.issueDraft) new IssueRepository(repository.database).draft(details.issueDraft.assetId, details.issueDraft.issueIds, candidates[0]!.candidateId);
-      return { candidates, count: candidates.length, warnings, sourceResults: details.sourceResults ?? [], ...(details.issueDraft ? { operation: "draft-revision", explanation: details.issueDraft.explanation } : {}) };
-    }, details.issueDraft?.requestHash);
+      return { candidates, count: candidates.length, warnings, sourceResults: details.sourceResults ?? [] };
+    });
   }
   async defer(rawInput: unknown) {
     const input = deferCandidateSchema.parse(rawInput);
@@ -117,8 +106,7 @@ export class CandidateService {
   async reject(rawInput: unknown) {
     const input = candidateSelectionSchema.parse(rawInput);
     return this.write(input.requestId, "reject", input, repository => {
-      const row = this.selected(repository, input); repository.setStatus(input.candidateId, input.candidateVersion, "REJECTED");
-      if (row.intent === "REVISION") new IssueRepository(repository.database).reopen(row.assetId, row.candidateId);
+      this.selected(repository, input); repository.setStatus(input.candidateId, input.candidateVersion, "REJECTED");
       return { rejected: true, candidateId: input.candidateId };
     });
   }
@@ -131,7 +119,6 @@ export class CandidateService {
       if (row.baseVersion !== (input.baseVersion ?? null)) throw new RepositoryOperationError("VERSION_CONFLICT", "修订基线版本不一致");
       const asset = row.intent === "NEW" ? assets.insert(row) : assets.revise(row.assetId, row.baseVersion!, row);
       repository.setStatus(row.candidateId, row.version, "ACCEPTED");
-      if (row.intent === "REVISION") new IssueRepository(repository.database).resolve(row.assetId);
       return { assetId: asset.assetId, version: asset.version, candidateId: row.candidateId, knowledgeNumber: asset.knowledgeNumber, status: "ACCEPTED" as const };
     });
   }
@@ -139,19 +126,16 @@ export class CandidateService {
     const input = z.object({ requestId: requestIdSchema, assetId: assetIdSchema }).strict().parse(rawInput);
     return this.write(input.requestId, "delete", input, (_repository, assets) => { assets.delete(input.assetId); return { assetId: input.assetId, deleted: true }; });
   }
-  async rewrite(input: CandidateSelection, fields: z.infer<typeof contentFieldsSchema>, requestInput?: unknown, operation: "rewrite" | "update" = "rewrite", issueDraft?: IssueDraft) {
+  async rewrite(input: CandidateSelection, fields: z.infer<typeof contentFieldsSchema>, requestInput?: unknown, operation: "rewrite" | "update" = "rewrite") {
     fields = contentFieldsSchema.parse(fields);
     checkStructuredContent({ retrievalTerms: fields.retrievalTerms });
     return this.write(input.requestId, operation, requestInput ?? { ...input, fields }, (repository, assets) => {
       const row = this.selected(repository, input);
       this.validateTargetsAtCommit([targetOf(row)]);
       this.validateRevision(assets, row);
-      if (issueDraft && (row.assetId !== issueDraft.assetId || assets.get(row.assetId)?.version !== issueDraft.assetVersion))
-        throw new RepositoryOperationError("VERSION_CONFLICT", "知识已变化，请重新起草修订");
       const next = repository.updateContent(row.candidateId, row.version, fields);
-      if (issueDraft) new IssueRepository(repository.database).draft(row.assetId, issueDraft.issueIds, row.candidateId);
-      return { ...summary(next), changed: next.version !== row.version, ...(issueDraft ? { operation: "draft-revision", explanation: issueDraft.explanation } : {}) };
-    }, issueDraft?.requestHash);
+      return { ...summary(next), changed: next.version !== row.version };
+    });
   }
   async rewriteInput(input: CandidateSelection) {
     return this.read((repository, assets) => {
@@ -185,9 +169,9 @@ export class CandidateService {
     for (const target of targets) if (target.scope === "WORKSPACE" && !config.workspaces.some(workspace => workspace.name === target.workspace))
       throw new RepositoryOperationError("TARGET_INVALID", "目标工作区未配置");
   }
-  private write<T>(requestId: string, operation: WriteOperation, input: unknown, fn: (repository: CandidateRepository, assets: AssetRepository) => T, requestHash?: string): T {
+  private write<T>(requestId: string, operation: WriteOperation, input: unknown, fn: (repository: CandidateRepository, assets: AssetRepository) => T): T {
     const db = openDatabase(this.options.databasePath);
-    try { const repository = new CandidateRepository(db); return repository.write(requestId, operation, requestHash ?? inputHash({ operation, input }), () => fn(repository, new AssetRepository(db))); }
+    try { const repository = new CandidateRepository(db); return repository.write(requestId, operation, inputHash({ operation, input }), () => fn(repository, new AssetRepository(db))); }
     finally { db.close(); }
   }
   private selected(repository: CandidateRepository, input: CandidateSelection): CandidateRecord {
@@ -211,9 +195,10 @@ export interface ReviewRequired { status: "REVIEW_REQUIRED"; instruction: string
 }>; omittedBodies: number }
 export function revisionBlocked(asset: AssetRecord, candidate: CandidateRecord) {
   return { status: "REVISION_BLOCKED" as const, assetId: asset.assetId, assetTitle: asset.title,
-    blockingCandidate: { candidateId: candidate.candidateId, number: candidate.number, status: candidate.status, title: candidate.title, updatedAt: candidate.updatedAt },
-    instruction: "本次修订没有写入。把 display 原样放在本轮最终回复的最后；不要重试。用户在 Hub 处理该候选并告知后，先用 asset_read 取最新 version，再重新调用 candidate_prepare。",
-    display: `**知识修订未生成**\n\n《${asset.title}》已有未处理的候选 #${candidate.number}（${candidate.status === "DEFERRED" ? "暂存" : "待审"}），本次修订没有写入。\n\n请先在 Precedent Loop 候选页处理候选 #${candidate.number}（接受或拒绝），处理后告诉我“重新生成候选”。` };
+    blockingCandidate: { candidateId: candidate.candidateId, number: candidate.number, status: candidate.status, title: candidate.title, updatedAt: candidate.updatedAt,
+      candidateVersion: candidate.version, summary: candidate.summary, bodyMarkdown: candidate.bodyMarkdown, retrievalTerms: candidate.retrievalTerms,
+      type: candidate.type, scope: candidate.scope, workspace: candidate.workspace },
+    instruction: "用 candidate_update 把本次修订内容并入 blockingCandidate，保留其仍成立的内容，范围与该候选一致；更新成功后评估记为 CANDIDATE，references 引用该 candidateId。" };
 }
 export type RevisionBlocked = ReturnType<typeof revisionBlocked>;
 function targetOf(row: CandidateRecord): CandidateTarget { return row.scope === "GLOBAL" ? { scope: "GLOBAL" } : { scope: "WORKSPACE", workspace: row.workspace! }; }

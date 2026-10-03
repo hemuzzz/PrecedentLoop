@@ -1,6 +1,5 @@
 import type { CandidateService } from "../asset/candidate-service.js";
 import { CandidateRepository } from "../asset/candidate-repository.js";
-import { IssueRepository } from "../asset/issue-repository.js";
 import type { KnowledgeProjection } from "../knowledge/projection.js";
 import { loadWorkspaceConfig } from "../workspace/config.js";
 export interface OverviewItem {
@@ -38,10 +37,6 @@ export class OverviewApplicationService {
       const entry = scope(item.workspace);
       entry.inboxCount++;
       entry.items.push({ assetId: item.assetId, title: item.title, type: item.type, pending: true, candidateId: item.candidateId, number: item.number, knowledgeNumber: null });
-    }
-    for (const card of new IssueRepository(this.dependencies.projection.repository.db).cards()) {
-      if (card.scope !== "GLOBAL" && !workspaces.includes(card.workspace!)) continue;
-      if (!inbox.some(item => item.assetId === card.assetId)) scope(card.workspace).inboxCount++;
     }
     for (const entry of scopes.values()) entry.items.sort((a, b) => a.title.localeCompare(b.title, "zh-CN") || a.assetId.localeCompare(b.assetId));
     return { scopes: [...scopes.values()].sort((a, b) => (a.workspace ?? "").localeCompare(b.workspace ?? "")),

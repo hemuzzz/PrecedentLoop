@@ -329,7 +329,7 @@ test("SKILL and DOCUMENT save complete candidates; cross-workspace and ineligibl
   } finally { await f.close(); }
 });
 
-test("MCP REVISION_BLOCKED preserves the pending candidate, creates no receipt and does not open the App", async () => {
+for (const deferred of [false, true]) test(`MCP REVISION_BLOCKED returns complete merge input without writes or notifications (${deferred ? "DEFERRED" : "PENDING"})`, async () => {
   const f = await fixture(); const search = new AssetSearchService(f.options);
   let notifications = 0;
   const server = createAssetMcpServer({ knowledgeService: new KnowledgeService(f.repository, f.capabilities, search),
@@ -339,24 +339,42 @@ test("MCP REVISION_BLOCKED preserves the pending candidate, creates no receipt a
   try {
     const formal = (await f.prepare("blocked-formal", [content()])).candidates[0]!;
     await f.service.accept(selection(formal, "blocked-accept"));
-    const pending = (await f.prepare("blocked-existing", [{ ...content(), existingAssetId: formal.assetId, baseVersion: 0 }])).candidates[0]!;
-    await f.service.defer({ ...selection(pending, "blocked-defer"), deferred: true });
+    let pending = (await f.prepare("blocked-existing", [{ ...content(), existingAssetId: formal.assetId, baseVersion: 0 }])).candidates[0]!;
+    pending = await f.service.rewrite(selection(pending, "blocked-prior-update"), { title: "已有修订", summary: "保留已核实的适用条件",
+      retrievalTerms: memory.retrievalTerms, bodyMarkdown: "已有修订正文：版本变更后，应以当前候选完整内容为基础继续补充。" });
+    if (deferred) await f.service.defer({ ...selection(pending, "blocked-defer"), deferred: true });
     const before = await f.service.pendingCandidates();
     await server.connect(serverTransport); await client.connect(clientTransport);
     const input = { ...memory, requestId: "blocked-new", revision: { assetId: formal.assetId, baseVersion: 0 }, reviewedCandidateIds: [pending.candidateId] };
     const response = await client.callTool({ name: "candidate_prepare", arguments: input });
     assert.equal(response.isError, undefined);
     const text = response.content as Array<{ type: string; text: string }>;
-    const result = JSON.parse(text[0]!.text) as { status: string; blockingCandidate: { candidateId: string; number: number; status: string }; display: string; instruction: string };
+    const result = JSON.parse(text[0]!.text) as import("../src/asset/candidate-service.js").RevisionBlocked;
     assert.equal(result.status, "REVISION_BLOCKED");
     assert.equal(result.blockingCandidate.candidateId, pending.candidateId);
-    assert.equal(result.blockingCandidate.number, pending.number); assert.equal(result.blockingCandidate.status, "DEFERRED");
-    assert.match(result.instruction, /最终回复的最后；不要重试/); assert.match(result.display, /知识修订未生成/);
+    assert.equal(result.blockingCandidate.number, pending.number); assert.equal(result.blockingCandidate.status, deferred ? "DEFERRED" : "PENDING");
+    const blocking = result.blockingCandidate, original = before[0]!.record;
+    assert.equal(original.version, 1);
+    assert.equal(blocking.candidateVersion, original.version);
+    assert.equal(blocking.summary, original.summary); assert.equal(blocking.bodyMarkdown, original.bodyMarkdown);
+    assert.deepEqual(blocking.retrievalTerms, original.retrievalTerms);
+    assert.equal(blocking.scope, original.scope); assert.equal(blocking.workspace, original.workspace);
+    assert.match(result.instruction, /candidate_update/); assert.match(result.instruction, /CANDIDATE/);
+    assert.equal("display" in result, false);
     assert.equal(notifications, 0); assert.equal(await f.service.receipt(input.requestId), undefined);
     assert.deepEqual(await f.service.pendingCandidates(), before);
-    await f.service.reject(selection(pending, "blocked-reject"));
+    const mergedBody = `${blocking.bodyMarkdown}\n\n补充：并入本次有直接证据的修订，保留原有适用条件。`;
+    const merge = await client.callTool({ name: "candidate_update", arguments: { requestId: "blocked-merge", capabilityIds: [],
+      candidateId: blocking.candidateId, candidateVersion: blocking.candidateVersion, title: blocking.title,
+      summary: blocking.summary, retrievalTerms: blocking.retrievalTerms, bodyMarkdown: mergedBody } });
+    assert.equal(merge.isError, undefined); assert.equal(notifications, 1);
+    const merged = (await f.service.list()).items[0]!;
+    assert.equal(merged.candidateId, pending.candidateId); assert.equal(merged.version, original.version + 1);
+    assert.equal(merged.status, "PENDING"); assert.equal(merged.baseVersion, original.baseVersion);
+    assert.equal(merged.bodyMarkdown, mergedBody); assert.ok(await f.service.receipt("blocked-merge"));
+    await f.service.reject(selection(merged, "blocked-reject"));
     const retry = await client.callTool({ name: "candidate_prepare", arguments: input });
-    assert.equal(retry.isError, undefined); assert.equal(notifications, 1); assert.ok(await f.service.receipt(input.requestId));
+    assert.equal(retry.isError, undefined); assert.equal(notifications, 2); assert.ok(await f.service.receipt(input.requestId));
     await f.service.reject(selection((await f.service.list()).items[0]!, "delete-retry"));
     await f.service.delete({ requestId: "delete-formal", assetId: formal.assetId });
     await assert.rejects(prepareWithReview({ ...memory, related: [{ assetId: formal.assetId, relation: "原有依据" }] }, f.service, f.capabilities), { code: "RELATED_ASSET_INVALID" });

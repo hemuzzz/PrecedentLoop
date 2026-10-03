@@ -21,12 +21,12 @@ export async function runCaptureCli(): Promise<void> {
     const input: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     const cachePath = process.env[CAPTURE_CACHE_ENV] ?? "";
     if (recording) {
-      const result = await recordAssessment(cachePath, input, "codex", process.env.PRECEDENT_LOOP_DATABASE_PATH);
+      const result = await recordAssessment(cachePath, input, "codex");
       process.stdout.write(JSON.stringify(result) + "\n");
     } else process.stdout.write(JSON.stringify(await handleCaptureHook(input, cachePath)) + "\n");
   } catch {
     if (recording) {
-      process.stderr.write("Precedent Loop: assessment not recorded; check identity, outcome, reason, references and cache path.\nFormat: sessionId, turnId, outcome (NO_INCREMENT|CANDIDATE|FAILED|SKIPPED), reason, references (required for CANDIDATE); optional knowledgeIssues: [{assetId, kind, detail, evidence?, missedQueries (required for MISSED)}].\n");
+      process.stderr.write("Precedent Loop: assessment not recorded; check identity, outcome, reason, references and cache path.\nFormat: sessionId, turnId, outcome (NO_INCREMENT|CANDIDATE|FAILED|SKIPPED), reason, references (required for CANDIDATE).\n");
       process.exitCode = 1;
     } else process.stdout.write(JSON.stringify({ systemMessage: CHECK_UNAVAILABLE }) + "\n");
   } finally { clearTimeout(timeout); }

@@ -28,7 +28,6 @@ export const assetIdSchema = z
   .string()
   .refine((id) => idGenerator.validate(id, "ast"), "id must be a valid ast-prefixed ID");
 export const candidateIdSchema = z.string().refine(id => idGenerator.validate(id, "cnd"), "id must be a valid cnd-prefixed ID");
-export const issueIdSchema = z.string().refine(id => idGenerator.validate(id, "isu"), "id must be a valid isu-prefixed ID");
 
 const requiredTextSchema = z
   .string()

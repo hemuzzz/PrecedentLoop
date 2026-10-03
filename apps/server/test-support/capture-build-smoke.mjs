@@ -49,19 +49,19 @@ try {
   const withIssues = { sessionId: "synthetic-issues", turnId: "turn", outcome: "NO_INCREMENT", reason: "isolated",
     knowledgeIssues: Array.from({ length: 4 }, () => ({ assetId: "ast1", kind: "OUTDATED", detail: "中".repeat(500), evidence: "文".repeat(500) })) };
   assert.ok(Buffer.byteLength(JSON.stringify(withIssues)) > 8192);
-  assert.deepEqual(invoke("record", withIssues, true), { recorded: true, issues: { recorded: 4, skipped: [] } });
+  assert.deepEqual(invoke("record", withIssues, true), { recorded: true });
   assert.deepEqual(invoke("stop", { session_id: withIssues.sessionId, turn_id: withIssues.turnId, hook_event_name: "Stop" }), {});
   const database = openDatabase(databasePath, { readonly: true });
   try {
-    assert.deepEqual(database.prepare("SELECT count(*) AS n FROM asset_issue WHERE is_deleted=0").get(), { n: 4 });
+    assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE name='asset_issue'").get(), undefined);
     assert.deepEqual(database.prepare("SELECT count(*) AS n FROM write_operation").get(), receiptsBefore);
   } finally { database.close(); }
-  assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: "invalid" }, true), { recorded: true, issues: { recorded: 0, error: "ISSUES_INVALID" } });
+  assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: "invalid" }, true), { recorded: true });
   assert.deepEqual(invoke("record", { ...withIssues, knowledgeIssues: [null, withIssues.knowledgeIssues[0], {}, {}, {}] }, true), {
-    recorded: true, issues: { recorded: 1, skipped: [{ index: 0, code: "ISSUE_INVALID" }, { index: 2, code: "ISSUE_INVALID" }, { index: 3, code: "ISSUE_INVALID" }, { index: 4, code: "TOO_MANY_ISSUES" }] },
+    recorded: true,
   });
   environment.PRECEDENT_LOOP_DATABASE_PATH = join(root, "missing.sqlite");
-  assert.deepEqual(invoke("record", withIssues, true), { recorded: true, issues: { recorded: 0, error: "ISSUES_NOT_RECORDED" } });
+  assert.deepEqual(invoke("record", withIssues, true), { recorded: true });
   const timings = Object.fromEntries(Object.entries(times).map(([name, samples]) => {
     const sorted = samples.toSorted((a, b) => a - b);
     return [name, { count: samples.length, medianMs: +sorted[Math.floor(sorted.length / 2)].toFixed(1), maxMs: +sorted.at(-1).toFixed(1) }];
